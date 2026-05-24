@@ -96,7 +96,14 @@ export class StuckStateSweepService {
     );
 
     for (const request of stuckRows) {
-      await this.resolveOne(request);
+      try {
+        await this.resolveOne(request);
+      } catch (err) {
+        this.logger.error(
+          { err, event: 'sweep.resolve_one.error', requestId: request.id },
+          'unexpected error resolving stuck request; skipping to next row',
+        );
+      }
     }
 
     this.logger.info(
@@ -181,8 +188,15 @@ export class StuckStateSweepService {
       if (err instanceof HcmArithmeticMismatchError) {
         // Check if this is case 2: err.actual === currentLocalTotal means
         // reconciliation already absorbed the HCM decrement into local total.
+        // err.actual is undefined when HCM omitted the field — that is not case 2.
         if (err.actual === currentLocalTotal) {
-          await this.commitApprovedCase2(request, days, correlationId, Date.now() - startedAt);
+          await this.commitApprovedCase2(
+            request,
+            days,
+            err.hcmCorrelationId,
+            correlationId,
+            Date.now() - startedAt,
+          );
           return;
         }
         // Real arithmetic mismatch — not case 2. Fail the request.
@@ -250,9 +264,15 @@ export class StuckStateSweepService {
       );
     } catch (err) {
       if (err instanceof HcmArithmeticMismatchError) {
+        // err.actual is undefined when HCM omitted the field — that is not case 2.
         if (err.actual === currentLocalTotal) {
           // Case 2: reconciliation already restored the total. Commit status only.
-          await this.commitCancelledCase2(request, correlationId, Date.now() - startedAt);
+          await this.commitCancelledCase2(
+            request,
+            err.hcmCorrelationId,
+            correlationId,
+            Date.now() - startedAt,
+          );
           return;
         }
         await this.failCancelling(request, err, correlationId, Date.now() - startedAt);
@@ -325,6 +345,7 @@ export class StuckStateSweepService {
   private async commitApprovedCase2(
     request: TimeOffRequest,
     days: number,
+    hcmCorrelationId: string | undefined,
     correlationId: string,
     durationMs: number,
   ): Promise<void> {
@@ -346,7 +367,7 @@ export class StuckStateSweepService {
         request.id,
         'APPROVING',
         'APPROVED',
-        { decidedAt: new Date() },
+        { hcmCorrelationId, decidedAt: new Date() },
         manager,
       );
       await this.auditService.record(
@@ -356,7 +377,12 @@ export class StuckStateSweepService {
           entityId: request.id,
           action: 'lifecycle.recovery.committed',
           afterState: { status: 'APPROVED' },
-          metadata: { idempotencyKey: `${request.id}:decrement`, case: 'reconciled', durationMs },
+          metadata: {
+            idempotencyKey: `${request.id}:decrement`,
+            case: 'reconciled',
+            hcmCorrelationId,
+            durationMs,
+          },
           correlationId,
         },
         manager,
@@ -425,6 +451,7 @@ export class StuckStateSweepService {
   /** Case 2 commit for CANCELLING→CANCELLED: balance already correct, status only. */
   private async commitCancelledCase2(
     request: TimeOffRequest,
+    hcmCorrelationId: string | undefined,
     correlationId: string,
     durationMs: number,
   ): Promise<void> {
@@ -435,7 +462,7 @@ export class StuckStateSweepService {
         request.id,
         'CANCELLING',
         'CANCELLED',
-        { decidedAt: new Date() },
+        { hcmCorrelationId, decidedAt: new Date() },
         manager,
       );
       await this.auditService.record(
@@ -445,7 +472,12 @@ export class StuckStateSweepService {
           entityId: request.id,
           action: 'lifecycle.recovery.committed',
           afterState: { status: 'CANCELLED' },
-          metadata: { idempotencyKey: `${request.id}:increment`, case: 'reconciled', durationMs },
+          metadata: {
+            idempotencyKey: `${request.id}:increment`,
+            case: 'reconciled',
+            hcmCorrelationId,
+            durationMs,
+          },
           correlationId,
         },
         manager,
