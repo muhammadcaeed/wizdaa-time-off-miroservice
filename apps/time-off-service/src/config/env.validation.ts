@@ -45,6 +45,7 @@ export const envValidationSchema = Joi.object({
   // Reconciliation (Cycle 04 / 06)
   RECONCILE_INTERVAL_MS: Joi.number().positive().default(3600000),
   STUCK_STATE_THRESHOLD_MS: Joi.number().positive().default(300000),
+  STUCK_STATE_SWEEP_INTERVAL_MS: Joi.number().integer().min(1000).default(60000),
 
   // Throttling (Cycle 07)
   THROTTLE_PER_IP_PER_MIN: Joi.number().positive().default(60),
