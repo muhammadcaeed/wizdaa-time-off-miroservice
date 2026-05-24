@@ -153,12 +153,11 @@ export class ReconciliationService implements PointReconciler {
       // Reconciliation mirrors EXISTING employees; it never creates a balance.
       // An absent local row would also risk an Employee/Location FK violation.
       if (!local) {
+        // No identifying ids in the log (REQ-DEF-09); the runId scopes it to the
+        // run and the audit trail (not emitted here, no row to attach to) is the
+        // PII-bearing channel.
         this.logger.info(
-          {
-            event: 'balance.reconciliation.skipped_unknown',
-            employeeId: row.employeeId,
-            locationId: row.locationId,
-          },
+          { event: 'balance.reconciliation.skipped_unknown', runId },
           'no local balance for HCM row; skipping',
         );
         return { examined: 1, conflict: 0 };
@@ -169,14 +168,10 @@ export class ReconciliationService implements PointReconciler {
         return { examined: 1, conflict: 0 };
       }
 
-      return this.applyDrift(
-        runId,
-        row,
-        local,
-        manager,
-        'balance.reconciled',
-        'balance.reconciliation.conflict',
-      );
+      return this.applyDrift(runId, row, local, manager, 'BATCH', {
+        reconciledAction: 'balance.reconciled',
+        conflictAction: 'balance.reconciliation.conflict',
+      });
     });
   }
 
@@ -186,12 +181,23 @@ export class ReconciliationService implements PointReconciler {
    * queue and must never throw on the expected breaker-open or no-drift paths.
    * @param employeeId the employee whose balance to refresh
    * @param locationId the location of the balance to refresh
+   * @param context optional correlation id + reason from the triggering flow,
+   *   recorded on the point-path audit row for cross-flow traceability
    * @returns nothing; drift is corrected or a conflict is audited
    */
-  async reconcilePoint(employeeId: string, locationId: string): Promise<void> {
+  async reconcilePoint(
+    employeeId: string,
+    locationId: string,
+    context?: { correlationId?: string; reason?: string },
+  ): Promise<void> {
     if (this.breaker.isHardOpen()) {
+      // Surrogate keys only (REQ-DEF-09): the triggering correlationId locates
+      // the flow; raw employee/location ids live solely on audit rows.
       this.logger.info(
-        { event: 'balance.point_reconciliation.skipped_breaker_open', employeeId, locationId },
+        {
+          event: 'balance.point_reconciliation.skipped_breaker_open',
+          correlationId: context?.correlationId,
+        },
         'breaker OPEN; skipping point reconciliation (batch backstop)',
       );
       return;
@@ -216,14 +222,13 @@ export class ReconciliationService implements PointReconciler {
       if (!local || hcmRow.totalDays === local.totalDays) {
         return; // unknown balance or no drift.
       }
-      await this.applyDrift(
-        local.id,
-        hcmRow,
-        local,
-        manager,
-        'balance.point_reconciled',
-        'balance.point_reconciliation.conflict',
-      );
+      // The audit correlationId is the triggering flow's id (saga/drift), not
+      // the balance row id, so the point-recon row joins that flow's audits.
+      await this.applyDrift(context?.correlationId ?? local.id, hcmRow, local, manager, 'POINT', {
+        reconciledAction: 'balance.point_reconciled',
+        conflictAction: 'balance.point_reconciliation.conflict',
+        reason: context?.reason,
+      });
     });
   }
 
@@ -241,9 +246,10 @@ export class ReconciliationService implements PointReconciler {
     hcm: HcmBalanceRow,
     local: Balance,
     manager: EntityManager,
-    reconciledAction: string,
-    conflictAction: string,
+    mode: 'BATCH' | 'POINT',
+    actions: { reconciledAction: string; conflictAction: string; reason?: string },
   ): Promise<RowOutcome> {
+    const { reconciledAction, conflictAction, reason } = actions;
     const reserved = await this.requestRepository.sumReservedDays(
       hcm.employeeId,
       hcm.locationId,
@@ -259,7 +265,7 @@ export class ReconciliationService implements PointReconciler {
           entityId: local.id,
           action: conflictAction,
           correlationId,
-          metadata: { hcmTotalDays: hcm.totalDays, reserved },
+          metadata: { hcmTotalDays: hcm.totalDays, reserved, reason },
         },
         manager,
       );
@@ -274,13 +280,26 @@ export class ReconciliationService implements PointReconciler {
     };
 
     try {
-      await this.balanceRepository.casReconcile(
-        local.id,
-        local.version,
-        hcm.totalDays,
-        reserved,
-        manager,
-      );
+      if (mode === 'POINT') {
+        // §9.7: the point path sets total_days ONLY; reserved is locally owned.
+        await this.balanceRepository.casReconcileTotal(
+          local.id,
+          local.version,
+          hcm.totalDays,
+          manager,
+        );
+      } else {
+        // §9.3: the batch path also writes reserved_days. The value is the
+        // recomputed sum of in-flight reservations, so this is an INV-03
+        // reassertion (same value by definition), not a semantic change.
+        await this.balanceRepository.casReconcile(
+          local.id,
+          local.version,
+          hcm.totalDays,
+          reserved,
+          manager,
+        );
+      }
     } catch (err) {
       if (err instanceof OccConflictError) {
         // Expected churn under concurrency, not a fault: a saga committed between
@@ -301,8 +320,14 @@ export class ReconciliationService implements PointReconciler {
         entityId: local.id,
         action: reconciledAction,
         beforeState,
-        afterState: { totalDays: hcm.totalDays, reservedDays: reserved },
+        // POINT writes total only (§9.7), so reserved is unchanged; BATCH (§9.3)
+        // reasserts the recomputed reserved sum.
+        afterState: {
+          totalDays: hcm.totalDays,
+          reservedDays: mode === 'POINT' ? local.reservedDays : reserved,
+        },
         correlationId,
+        metadata: { reason },
       },
       manager,
     );

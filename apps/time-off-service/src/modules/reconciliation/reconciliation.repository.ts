@@ -18,6 +18,9 @@ const COMPLETED_STATUSES: readonly ReconciliationStatus[] = [
 /** SQLite/better-sqlite3 message fragment for the partial UNIQUE-index violation. */
 const UNIQUE_VIOLATION_FRAGMENT = 'UNIQUE constraint failed';
 
+/** better-sqlite3 structured error code for a UNIQUE-constraint violation. */
+const UNIQUE_VIOLATION_CODE = 'SQLITE_CONSTRAINT_UNIQUE';
+
 /** Default page size for {@link ReconciliationRepository.list} (api-contract.md §5). */
 const DEFAULT_LIST_LIMIT = 50;
 
@@ -82,7 +85,9 @@ export class ReconciliationRepository {
     } catch (err) {
       // The partial UNIQUE index is the single source of the concurrency guard;
       // any other failure is a real fault and must propagate untranslated.
-      if (err instanceof QueryFailedError && err.message.includes(UNIQUE_VIOLATION_FRAGMENT)) {
+      // Prefer the structured driver code (locale/message-stable); fall back to
+      // the message fragment for driver builds that don't surface a code.
+      if (err instanceof QueryFailedError && this.isUniqueViolation(err)) {
         throw new ReconciliationInProgressError();
       }
       throw err;
@@ -205,6 +210,16 @@ export class ReconciliationRepository {
     return { data, pagination: { next_cursor: nextCursor, has_more: hasMore } };
   }
 
+  /**
+   * True when a failed insert is a UNIQUE-constraint violation. Checks the
+   * structured driver code first (stable across SQLite locales/versions) and
+   * falls back to the legacy message fragment.
+   */
+  private isUniqueViolation(err: QueryFailedError): boolean {
+    const code = (err.driverError as { code?: string } | undefined)?.code;
+    return code === UNIQUE_VIOLATION_CODE || err.message.includes(UNIQUE_VIOLATION_FRAGMENT);
+  }
+
   /** Base64-encodes the `(started_at, id)` keyset of a row into an opaque cursor. */
   private encodeCursor(row: Reconciliation): string {
     const payload: ListCursor = { startedAt: row.startedAt.toISOString(), id: row.id };
@@ -221,7 +236,14 @@ export class ReconciliationRepository {
         typeof (parsed as ListCursor).startedAt === 'string' &&
         typeof (parsed as ListCursor).id === 'string'
       ) {
-        return parsed as ListCursor;
+        const cursorValue = parsed as ListCursor;
+        // A structurally-valid cursor can still carry a non-date startedAt; an
+        // unparseable date would silently become an Invalid Date and corrupt the
+        // keyset predicate, so reject it as malformed like a JSON parse failure.
+        if (Number.isNaN(new Date(cursorValue.startedAt).getTime())) {
+          throw new ReconciliationCursorError();
+        }
+        return cursorValue;
       }
     } catch {
       // fall through to the typed error below

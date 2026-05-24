@@ -27,7 +27,8 @@ export class HcmReaderClient implements HcmReader {
    * @throws HcmTransportError on network failure (F-01)
    */
   async getBalances(employeeId: string): Promise<HcmBalanceRow[]> {
-    const response = await this.get(`/hcm/balances/${employeeId}`);
+    // Defensive: encode the id so a reserved character can't break out of the path.
+    const response = await this.get(`/hcm/balances/${encodeURIComponent(employeeId)}`);
 
     // An unknown employee (404) is "nothing to reconcile", not a fault: point
     // reconciliation treats a missing HCM employee as "no drift" and must not

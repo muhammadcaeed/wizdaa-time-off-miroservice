@@ -13,6 +13,12 @@ export interface PointReconciliationJob {
   employeeId: string;
   locationId: string;
   reason: string;
+  /**
+   * The originating saga/drift correlation id, carried onto the point-path audit
+   * row so it joins the triggering flow's other audits (instead of the balance
+   * row id, which has no cross-flow meaning).
+   */
+  correlationId?: string;
 }
 
 /**
@@ -25,9 +31,15 @@ export interface PointReconciler {
    * Reconciles one balance against the HCM realtime read (TRD §9.7).
    * @param employeeId the employee whose balance to refresh
    * @param locationId the location of the balance to refresh
+   * @param context optional correlation id + reason from the triggering flow,
+   *   recorded on the point-path audit row for traceability
    * @returns a promise that settles when the local balance is reconciled
    */
-  reconcilePoint(employeeId: string, locationId: string): Promise<void>;
+  reconcilePoint(
+    employeeId: string,
+    locationId: string,
+    context?: { correlationId?: string; reason?: string },
+  ): Promise<void>;
 }
 
 /**

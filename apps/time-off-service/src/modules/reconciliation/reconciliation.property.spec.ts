@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fc from 'fast-check';
 import type { PinoLogger } from 'nestjs-pino';
 import type { DataSource } from 'typeorm';
@@ -162,6 +163,75 @@ describe('reconciliation idempotence and INV-02 under interleave (property-based
     );
   });
 
+  /**
+   * @req INV-01
+   * @req INV-02
+   * @req R-02
+   */
+  it('R-02: saga commit re-applying its delta over a reconciliation absolute write under-counts transiently, then the next reconciliation converges (INV-01/INV-02 hold throughout)', async () => {
+    // Setup mirrors the hazard documented at the saga commit() OCC-retry
+    // boundary: the employee has a SUBMITTED request reserving `days`, and HCM
+    // has ALREADY absorbed the matching decrement (hcmTotal = startTotal - days).
+    const startTotal = 20;
+    const days = 3;
+    const hcmTotal = startTotal - days; // HCM already reflects the decrement.
+    const harness = await makeHarness(
+      [{ total: startTotal, reserved: days }],
+      new Map([['emp_0', hcmTotal]]),
+    );
+    const assertInvariants = async (): Promise<void> => {
+      const b = await harness.dataSource.getRepository(Balance).findOneByOrFail({ id: 'bal_0' });
+      expect(b.reservedDays).toBeGreaterThanOrEqual(0); // INV-01
+      expect(b.totalDays - b.reservedDays).toBeGreaterThanOrEqual(0); // INV-02
+    };
+
+    try {
+      await assertInvariants();
+
+      // 1. Reconcile: the batch absolute write lands hcmTotal (already net of the
+      //    decrement) into local total_days.
+      await harness.service.runOnDemand();
+      await assertInvariants();
+      const afterRecon = await harness.dataSource
+        .getRepository(Balance)
+        .findOneByOrFail({ id: 'bal_0' });
+      expect(afterRecon.totalDays).toBe(hcmTotal);
+
+      // 2. Saga-style commit RE-APPLIES the fixed -days delta on top of the
+      //    reconciled total: total/reserved -= days. This double-counts the
+      //    decrement and transiently UNDER-counts local total_days.
+      await harness.dataSource.transaction((manager) =>
+        harness.balanceRepo.casCommit(
+          afterRecon.id,
+          afterRecon.version,
+          -days,
+          -days,
+          'hcm_op_double',
+          manager,
+        ),
+      );
+      const afterCommit = await harness.dataSource
+        .getRepository(Balance)
+        .findOneByOrFail({ id: 'bal_0' });
+      expect(afterCommit.totalDays).toBe(hcmTotal - days); // transient under-count
+      await assertInvariants(); // INV-01/INV-02 still hold despite the under-count
+
+      // 3. The NEXT reconciliation converges local total_days back to the HCM
+      //    total. (Reserved is now 0, so the §9.3 batch write restores it.)
+      await harness.service.runOnDemand();
+      const afterConverge = await harness.dataSource
+        .getRepository(Balance)
+        .findOneByOrFail({ id: 'bal_0' });
+      expect(afterConverge.totalDays).toBe(hcmTotal);
+      // The SUBMITTED request still reserves `days`; the §9.3 batch write
+      // reasserts reserved from sumReservedDays, so it returns to `days`.
+      expect(afterConverge.reservedDays).toBe(days);
+      await assertInvariants();
+    } finally {
+      await harness.dataSource.destroy();
+    }
+  });
+
   it('INV-02: point reconciliation interleaved with concurrent reservations never drives total - reserved < 0', async () => {
     await fc.assert(
       fc.asyncProperty(
@@ -188,6 +258,20 @@ describe('reconciliation idempotence and INV-02 under interleave (property-based
                 // invariant still permits it (mirrors the submit guard, INV-02).
                 const b = await harness.balanceRepo.findByEmployeeAndLocation('emp_0', LOC);
                 if (b && b.totalDays - (b.reservedDays + 1) >= 0) {
+                  // Back the row bump with a SUBMITTED request so sumReservedDays
+                  // tracks row.reservedDays (INV-03). This is load-bearing under
+                  // §9.7: the point path no longer overwrites reserved, so the
+                  // applyDrift guard relies on sumReservedDays being truthful.
+                  await harness.dataSource.getRepository(TimeOffRequest).insert({
+                    id: `req_${randomUUID()}`,
+                    employeeId: 'emp_0',
+                    locationId: LOC,
+                    startDate: '2026-07-01',
+                    endDate: '2026-07-01',
+                    daysRequested: 1,
+                    status: 'SUBMITTED',
+                    submittedAt: new Date(),
+                  });
                   await harness.dataSource
                     .getRepository(Balance)
                     .update({ id: b.id }, { reservedDays: b.reservedDays + 1 });

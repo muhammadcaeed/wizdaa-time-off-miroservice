@@ -227,13 +227,14 @@ describe('ReconciliationService (batch + point, TRD §9.3/§9.7)', () => {
   });
 
   it('point reconciliation: safe drift updates local to HCM total and audits point_reconciled', async () => {
-    await seedBalance(20);
+    await seedBalance(20, 3); // row reserved=3
     await seedReservingRequest(3);
 
     await service(new FakeHcmReader([], [hcmRow(30)])).reconcilePoint(EMP_ID, LOC_ID);
 
     const after = await balanceRepo.findByEmployeeAndLocation(EMP_ID, LOC_ID);
     expect(after?.totalDays).toBe(30);
+    // TRD §9.7: the point path sets total_days ONLY; reserved is left untouched.
     expect(after?.reservedDays).toBe(3);
     expect(after?.version).toBe(1);
     expect(await auditActions()).toEqual(['balance.point_reconciled']);

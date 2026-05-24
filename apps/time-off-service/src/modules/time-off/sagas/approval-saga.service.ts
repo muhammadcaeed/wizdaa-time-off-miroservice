@@ -220,6 +220,7 @@ export class ApprovalSagaService {
             employeeId: request.employeeId,
             locationId: request.locationId,
             reason: err.reason,
+            correlationId,
           });
         }
         return failed;
@@ -273,6 +274,14 @@ export class ApprovalSagaService {
     correlationId: string,
     hcmMeta: Record<string, unknown>,
   ): Promise<RequestResponse> {
+    // Known concurrency hazard (deferred to Plan 06, R-04 family): if a batch
+    // reconciliation writes an absolute total that already absorbed this HCM
+    // decrement BETWEEN our retries, the retry re-reads the fresh balance and
+    // re-applies its fixed `-days` delta on top — transiently UNDER-counting
+    // local total_days. INV-01/INV-02 still hold throughout, and the next
+    // reconciliation converges the total back to HCM. The durable fix (carry an
+    // expectedPostCommitTotal across retries and skip the delta when the fresh
+    // balance already reflects it) is out of scope for cycle-04.
     try {
       return await withOccRetry(() =>
         this.dataSource.transaction(async (manager) => {

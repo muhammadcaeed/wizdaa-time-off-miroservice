@@ -123,6 +123,33 @@ export class BalanceRepository {
   }
 
   /**
+   * Overwrites ONLY `total_days` with the absolute HCM value during point
+   * reconciliation (TRD §9.7), stamping `last_hcm_sync_at`. Unlike
+   * {@link casReconcile} (the §9.3 batch path) it deliberately does NOT write
+   * `reserved_days`: §9.7 sets the total alone, leaving the locally-owned
+   * reservation count untouched. Version-CAS guards against a concurrent saga
+   * write between the read and this overwrite (ADR-005).
+   * @param id the balance row id
+   * @param expectedVersion version observed at read time; the CAS predicate
+   * @param newTotalDays absolute total to persist (HCM is source of truth)
+   * @param manager the active transaction's entity manager
+   * @returns nothing; the row is updated in place
+   * @throws OccConflictError when the version predicate matches zero rows
+   */
+  async casReconcileTotal(
+    id: string,
+    expectedVersion: number,
+    newTotalDays: number,
+    manager: EntityManager,
+  ): Promise<void> {
+    // Literal value (not `() => 'expr'`) so .set() writes the absolute total.
+    await this.cas(manager, id, expectedVersion, {
+      totalDays: newTotalDays,
+      lastHcmSyncAt: new Date(),
+    });
+  }
+
+  /**
    * Stamps `last_hcm_sync_at = now()` without touching the version or counters
    * (TRD §9.3 no-drift branch). Deliberately carries NO version predicate: a
    * metadata touch must not race a concurrent saga write, and observing equal

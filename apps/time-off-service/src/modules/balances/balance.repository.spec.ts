@@ -97,4 +97,24 @@ describe('BalanceRepository (version-check CAS)', () => {
       OccConflictError,
     );
   });
+
+  it('casReconcileTotal sets absolute total only (TRD §9.7), leaves reserved untouched, bumps version', async () => {
+    await repo.casReserve(BAL_ID, 0, 4, dataSource.manager); // version 1, reserved 4
+
+    await repo.casReconcileTotal(BAL_ID, 1, 25, dataSource.manager);
+
+    const after = await repo.findByEmployeeAndLocation(EMP_ID, LOC_ID);
+    expect(after?.totalDays).toBe(25);
+    expect(after?.reservedDays).toBe(4); // §9.7 does NOT touch reserved
+    expect(after?.version).toBe(2);
+    expect(after?.lastHcmSyncAt).not.toBeNull();
+  });
+
+  it('casReconcileTotal throws OccConflictError when the observed version is stale', async () => {
+    await repo.casReconcileTotal(BAL_ID, 0, 18, dataSource.manager); // version is now 1
+
+    await expect(repo.casReconcileTotal(BAL_ID, 0, 19, dataSource.manager)).rejects.toBeInstanceOf(
+      OccConflictError,
+    );
+  });
 });
