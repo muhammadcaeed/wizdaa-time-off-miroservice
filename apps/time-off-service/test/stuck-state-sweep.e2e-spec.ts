@@ -375,7 +375,200 @@ describe('Stuck-state sweep: row within threshold is not touched', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Suite 5: Stuck CANCELLING — HCM confirms (idempotent replay case 1)
+// Suite 5: Stuck APPROVING — reconciliation already absorbed delta (case 2)
+// ---------------------------------------------------------------------------
+describe('Stuck-state sweep: APPROVING → APPROVED (case 2, recon already absorbed delta)', () => {
+  let mock: INestApplication;
+  let ctx: E2EContext;
+  let sweep: StuckStateSweepService;
+
+  beforeAll(async () => {
+    const ref = await Test.createTestingModule({ imports: [MockHcmModule] }).compile();
+    mock = ref.createNestApplication();
+    await mock.listen(0);
+    ctx = await bootstrapE2E({ hcmAdjuster: new HcmClient(await mock.getUrl(), 5000) });
+
+    await ctx.dataSource.getRepository(Location).insert({ id: LOC, name: 'HQ', countryCode: 'US' });
+    await ctx.dataSource.getRepository(Employee).insert({
+      id: MGR,
+      email: 'm@x.io',
+      firstName: 'M',
+      lastName: 'O',
+      locationId: LOC,
+      managerId: null,
+    });
+
+    sweep = ctx.app.get(StuckStateSweepService);
+  });
+
+  afterAll(async () => {
+    await ctx.close();
+    await mock.close();
+  });
+
+  it('commits APPROVED without double-applying the delta when recon already absorbed it (case 2)', async () => {
+    // Scenario: approval saga crashed between HCM decrement and local commit.
+    // Reconciliation then ran and absorbed the HCM decrement into local total:
+    //   - HCM already has total=7 (decrement was applied).
+    //   - Local balance also shows total=7 (recon already absorbed it).
+    //   - Reservation remains: reserved=3 (recon does not release reservations).
+    //
+    // Sweep calls HCM with expectedPreTotal=7. HCM replays the idempotent decrement
+    // and returns actual=7 (its current total). The arithmetic check sees:
+    //   new_total_days(7) == expectedPreTotal(7) + delta(-3)  →  7 == 4  → MISMATCH
+    //   err.actual(7) === currentLocalTotal(7)  → case 2 detected.
+    // Expected outcome: status=APPROVED, total UNCHANGED at 7, reserved released to 0.
+    await seedEmployee(ctx, mock, 'emp_sw_c2a', 7, 3);
+    // Seed mock HCM with total=7 (simulating it already processed the decrement).
+    // The mock's balance was initialised to 7 by seedEmployee above. We prime the
+    // idempotency key by performing the decrement on the mock so it stores the key.
+    const reqId = 'req_sw_c2a';
+    const idempotencyKey = `${reqId}:decrement`;
+    // The mock HCM already has total=7 (seeded via seedEmployee). Replay the decrement
+    // so the mock stores the idempotency key — same call the saga would have made when
+    // total was 10. We reset the mock balance to 10 first, perform the decrement (mock
+    // stores key + returns 7), then reset mock balance back to 7 so the idempotent
+    // replay returns 7 as if total was never 10 from the mock's perspective.
+    //
+    // Simpler approach: directly prime the idempotency key on the mock by adjusting
+    // from 7 (which is the current mock total) with delta=-3. Mock sees total=7,
+    // applies delta=-3, returns new_total=4. But that gives new_total=4, not 7.
+    //
+    // Correct approach: reset mock balance to 10, call decrement (mock stores key,
+    // returns 7), then reset mock balance back to 7 (simulating recon on mock side).
+    await request(mock.getHttpServer())
+      .post('/mock/control/balances')
+      .send({ employee_id: 'emp_sw_c2a', location_id: LOC, total_days: 10 });
+    await request(mock.getHttpServer())
+      .post('/hcm/balances/adjust')
+      .set('Idempotency-Key', idempotencyKey)
+      .send({
+        employee_id: 'emp_sw_c2a',
+        location_id: LOC,
+        delta: -3,
+        operation_type: 'DECREMENT',
+        source_reference: `request:${reqId}`,
+      })
+      .expect(200);
+    // Mock HCM now has total=7 and the idempotency key stored.
+    // Local DB also has total=7, reserved=3 (seeded above — simulates recon absorbed delta).
+
+    await seedStuckRequest(ctx, reqId, 'emp_sw_c2a', 'APPROVING', 3);
+
+    await sweep.runSweep();
+
+    const req = await ctx.dataSource.getRepository(TimeOffRequest).findOneByOrFail({ id: reqId });
+    expect(req.status).toBe('APPROVED');
+
+    const balance = await ctx.dataSource
+      .getRepository(Balance)
+      .findOneByOrFail({ id: 'bal_emp_sw_c2a' });
+    // Key assertion: total must NOT change — recon already applied the decrement.
+    expect(balance.totalDays).toBe(7);
+    // Reservation must be released.
+    expect(balance.reservedDays).toBe(0);
+
+    const recoveryAudit = await ctx.dataSource.getRepository(AuditLog).findOneBy({
+      action: 'lifecycle.recovery.committed',
+      entityId: reqId,
+    });
+    expect(recoveryAudit).not.toBeNull();
+    expect((recoveryAudit!.metadata as { case: string }).case).toBe('reconciled');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite 6: Stuck CANCELLING — reconciliation already absorbed delta (case 2)
+// ---------------------------------------------------------------------------
+describe('Stuck-state sweep: CANCELLING → CANCELLED (case 2, recon already absorbed delta)', () => {
+  let mock: INestApplication;
+  let ctx: E2EContext;
+  let sweep: StuckStateSweepService;
+
+  beforeAll(async () => {
+    const ref = await Test.createTestingModule({ imports: [MockHcmModule] }).compile();
+    mock = ref.createNestApplication();
+    await mock.listen(0);
+    ctx = await bootstrapE2E({ hcmAdjuster: new HcmClient(await mock.getUrl(), 5000) });
+
+    await ctx.dataSource.getRepository(Location).insert({ id: LOC, name: 'HQ', countryCode: 'US' });
+    await ctx.dataSource.getRepository(Employee).insert({
+      id: MGR,
+      email: 'm@x.io',
+      firstName: 'M',
+      lastName: 'O',
+      locationId: LOC,
+      managerId: null,
+    });
+
+    sweep = ctx.app.get(StuckStateSweepService);
+  });
+
+  afterAll(async () => {
+    await ctx.close();
+    await mock.close();
+  });
+
+  it('commits CANCELLED without double-applying the delta when recon already absorbed it (case 2)', async () => {
+    // Scenario: cancellation saga crashed between HCM increment and local commit.
+    // Reconciliation then ran and absorbed the HCM increment into local total:
+    //   - HCM already has total=10 (increment was applied).
+    //   - Local balance also shows total=10 (recon already absorbed it).
+    //   - CANCELLING holds no reservation (ADR-012), reserved=0.
+    //
+    // Sweep calls HCM with expectedPreTotal=10. HCM replays the idempotent increment
+    // and returns actual=10 (its current total). The arithmetic check sees:
+    //   new_total_days(10) == expectedPreTotal(10) + delta(+3)  →  10 == 13  → MISMATCH
+    //   err.actual(10) === currentLocalTotal(10)  → case 2 detected.
+    // Expected outcome: status=CANCELLED, total UNCHANGED at 10, reserved stays 0.
+    await seedEmployee(ctx, mock, 'emp_sw_c2c', 10, 0);
+    // Seed mock HCM with total=10 (simulating it already processed the increment).
+    // Reset mock balance to 7, perform the increment (stores key, returns 10),
+    // then leave mock at 10 — same as the local DB.
+    const reqId = 'req_sw_c2c';
+    const idempotencyKey = `${reqId}:increment`;
+    await request(mock.getHttpServer())
+      .post('/mock/control/balances')
+      .send({ employee_id: 'emp_sw_c2c', location_id: LOC, total_days: 7 });
+    await request(mock.getHttpServer())
+      .post('/hcm/balances/adjust')
+      .set('Idempotency-Key', idempotencyKey)
+      .send({
+        employee_id: 'emp_sw_c2c',
+        location_id: LOC,
+        delta: 3,
+        operation_type: 'INCREMENT',
+        source_reference: `request:${reqId}`,
+      })
+      .expect(200);
+    // Mock HCM now has total=10 and the idempotency key stored.
+    // Local DB also has total=10, reserved=0 (seeded above — simulates recon absorbed delta).
+
+    await seedStuckRequest(ctx, reqId, 'emp_sw_c2c', 'CANCELLING', 3);
+
+    await sweep.runSweep();
+
+    const req = await ctx.dataSource.getRepository(TimeOffRequest).findOneByOrFail({ id: reqId });
+    expect(req.status).toBe('CANCELLED');
+
+    const balance = await ctx.dataSource
+      .getRepository(Balance)
+      .findOneByOrFail({ id: 'bal_emp_sw_c2c' });
+    // Key assertion: total must NOT change — recon already applied the increment.
+    expect(balance.totalDays).toBe(10);
+    expect(balance.reservedDays).toBe(0);
+
+    const recoveryAudit = await ctx.dataSource.getRepository(AuditLog).findOneBy({
+      action: 'lifecycle.recovery.committed',
+      entityId: reqId,
+    });
+    expect(recoveryAudit).not.toBeNull();
+    expect((recoveryAudit!.metadata as { case: string }).case).toBe('reconciled');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite 7: Stuck CANCELLING — HCM confirms (idempotent replay case 1)
 // ---------------------------------------------------------------------------
 describe('Stuck-state sweep: CANCELLING → CANCELLED (case 1, HCM confirms)', () => {
   let mock: INestApplication;
