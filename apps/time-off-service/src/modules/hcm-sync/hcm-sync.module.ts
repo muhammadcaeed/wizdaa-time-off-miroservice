@@ -75,7 +75,21 @@ const defaultSleep = (ms: number): Promise<void> =>
           config.getOrThrow<number>('HCM_TIMEOUT_MS'),
         ),
     },
+    {
+      // Raw (non-resilient) HCM adjust client for the stuck-state sweep (Cycle 06,
+      // REQ-DEF-11). The sweep bypasses the resilient adjuster so that case-2
+      // arithmetic mismatches (reconciliation already absorbed the HCM op) do NOT
+      // trip the circuit breaker — a case-2 is NOT HCM misbehavior, it is a
+      // known-good idempotent replay where the local total moved under us.
+      provide: HcmClient,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService): HcmClient =>
+        new HcmClient(
+          config.getOrThrow<string>('HCM_BASE_URL'),
+          config.getOrThrow<number>('HCM_TIMEOUT_MS'),
+        ),
+    },
   ],
-  exports: [HCM_ADJUSTER, HCM_READER, CircuitBreaker],
+  exports: [HCM_ADJUSTER, HCM_READER, CircuitBreaker, HcmClient],
 })
 export class HcmSyncModule {}
