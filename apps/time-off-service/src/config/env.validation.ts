@@ -47,9 +47,9 @@ export const envValidationSchema = Joi.object({
   STUCK_STATE_THRESHOLD_MS: Joi.number().positive().default(300000),
   STUCK_STATE_SWEEP_INTERVAL_MS: Joi.number().integer().min(1000).default(60000),
 
-  // Throttling (Cycle 07)
-  THROTTLE_PER_IP_PER_MIN: Joi.number().positive().default(60),
-  THROTTLE_PER_SUB_PER_MIN: Joi.number().positive().default(120),
+  // Throttling (Cycle 07) — POST endpoints limited per plan: 10/min IP, 30/min sub.
+  THROTTLE_PER_IP_PER_MIN: Joi.number().positive().default(10),
+  THROTTLE_PER_SUB_PER_MIN: Joi.number().positive().default(30),
 
   // Mock HCM (test/dev only)
   MOCK_HCM_PORT: Joi.number().port().default(4001),
