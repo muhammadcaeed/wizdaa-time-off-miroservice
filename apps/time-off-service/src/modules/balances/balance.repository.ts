@@ -94,6 +94,34 @@ export class BalanceRepository {
     });
   }
 
+  /**
+   * Overwrites a balance with absolute HCM-sourced values during reconciliation
+   * (TRD §9.3, §9.7): `total_days` and `reserved_days` are set, not adjusted,
+   * and `last_hcm_sync_at` is stamped. Version-CAS guards against a concurrent
+   * saga write between the read and this overwrite (ADR-005).
+   * @param id the balance row id
+   * @param expectedVersion version observed at read time; the CAS predicate
+   * @param newTotalDays absolute total to persist (HCM is source of truth)
+   * @param newReservedDays absolute reserved count to persist
+   * @param manager the active transaction's entity manager
+   * @returns nothing; the row is updated in place
+   * @throws OccConflictError when the version predicate matches zero rows
+   */
+  async casReconcile(
+    id: string,
+    expectedVersion: number,
+    newTotalDays: number,
+    newReservedDays: number,
+    manager: EntityManager,
+  ): Promise<void> {
+    // Literal values (not `() => 'expr'`) so .set() writes absolutes, not deltas.
+    await this.cas(manager, id, expectedVersion, {
+      totalDays: newTotalDays,
+      reservedDays: newReservedDays,
+      lastHcmSyncAt: new Date(),
+    });
+  }
+
   private async cas(
     manager: EntityManager,
     id: string,
