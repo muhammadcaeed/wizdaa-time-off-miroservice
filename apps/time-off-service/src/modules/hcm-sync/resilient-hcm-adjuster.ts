@@ -61,6 +61,12 @@ export class ResilientHcmAdjuster implements HcmAdjuster {
         }
         if (err.countsTowardBreaker) {
           this.breaker.recordFailure();
+        } else {
+          // A non-counting error (F-05) still means HCM responded healthily at
+          // the transport level — it's a domain reject. Reporting it as a
+          // success resolves a HALF_OPEN probe instead of wedging the probe slot
+          // until its deadline, and is a no-op trip-wise while CLOSED.
+          this.breaker.recordSuccess();
         }
 
         const attemptsRemain = attempt < totalAttempts - 1;

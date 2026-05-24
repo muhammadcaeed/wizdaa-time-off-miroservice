@@ -99,7 +99,7 @@ describe('ResilientHcmAdjuster (retry-inside-breaker, ADR-008)', () => {
     expect(breaker.snapshot().window.filter(Boolean)).toHaveLength(4);
   });
 
-  it('F-05 insufficient balance: no retry, breaker NOT incremented', async () => {
+  it('F-05 insufficient balance: no retry, no breaker failure recorded', async () => {
     const fake = new FakeAdjuster([new HcmInsufficientBalanceError('409')]);
     const breaker = makeBreaker();
 
@@ -107,8 +107,23 @@ describe('ResilientHcmAdjuster (retry-inside-breaker, ADR-008)', () => {
       HcmInsufficientBalanceError,
     );
     expect(fake.calls).toHaveLength(1);
-    expect(breaker.snapshot().window).toEqual([]);
+    // HCM responded healthily (domain reject), so it counts as a success outcome,
+    // not a breaker failure — consecutive stays 0 and no failure enters the window.
+    expect(breaker.snapshot().window).toEqual([false]);
     expect(breaker.snapshot().consecutiveFailures).toBe(0);
+  });
+
+  it('F-05 during a HALF_OPEN probe resolves the probe to CLOSED (no wedge)', async () => {
+    const clock = { t: 0 };
+    const breaker = new CircuitBreaker(BREAKER_CONFIG, () => clock.t, fakeLogger());
+    for (let i = 0; i < 5; i++) breaker.recordFailure(); // OPEN
+    clock.t += BREAKER_CONFIG.cooldownMs; // cool-down elapsed; entry gate claims the probe
+    const fake = new FakeAdjuster([new HcmInsufficientBalanceError('409')]);
+
+    await expect(build(fake, breaker).adjustBalance(makeInput())).rejects.toBeInstanceOf(
+      HcmInsufficientBalanceError,
+    );
+    expect(breaker.snapshot().state).toBe('CLOSED');
   });
 
   it('F-04 ambiguous: no retry, breaker incremented', async () => {
