@@ -4,12 +4,13 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, type EntityManager } from 'typeorm';
 import { AuditService } from '../../../common/audit/audit.service';
 import { BalanceNotFoundError } from '../../../common/errors/balance-not-found.error';
+import { InsufficientBalanceError } from '../../../common/errors/insufficient-balance.error';
+import { InvalidTransitionError } from '../../../common/errors/invalid-transition.error';
 import { RequestNotFoundError } from '../../../common/errors/request-not-found.error';
+import { HcmUnavailableError } from '../../../common/errors/hcm-unavailable.error';
 import { OccConflictError } from '../../../common/persistence/occ-conflict.error';
 import { withOccRetry } from '../../../common/persistence/with-occ-retry';
 import { actorTypeOf, type Principal } from '../../auth/principal';
-import { HcmUnavailableError } from '../../../common/errors/hcm-unavailable.error';
-import { CircuitBreaker } from '../../hcm-sync/circuit-breaker';
 import { HCM_ADJUSTER, type HcmAdjuster } from '../../hcm-sync/hcm-adjuster';
 import {
   HcmArithmeticMismatchError,
@@ -18,6 +19,7 @@ import {
   HcmInsufficientBalanceError,
   HcmTransportError,
 } from '../../hcm-sync/hcm.errors';
+import { CircuitBreaker } from '../../hcm-sync/circuit-breaker';
 import { BalanceRepository } from '../../balances/balance.repository';
 import { DriftDetectionService } from '../../reconciliation/drift-detection.service';
 import {
@@ -28,25 +30,30 @@ import { RequestRepository } from '../request.repository';
 import { toRequestResponse, type RequestResponse } from '../dto/request-response.dto';
 
 /**
- * Reverse cancellation saga (TRD §3.2 Flow C, §5.2 T-09/10/11). The exact mirror
- * of {@link ApprovalSagaService}: an HCM INCREMENT that restores the days an
- * APPROVED request consumed, run as three phases with the HCM call outside any DB
- * transaction (holding a SQLite write tx across HTTP would block all writers):
+ * Admin retry for a stuck APPROVAL_FAILED request (T-05, TRD §5.2, REQ-LIFE-06).
  *
- * 1. T-09 — status APPROVED→CANCELLING (status CAS) + capture pre-total + audit.
- * 2. HCM increment (key `<id>:increment`), then the expected-total arithmetic check.
- * 3. T-10 — on success: balance total += days (version CAS, reserved UNCHANGED) +
- *    status→CANCELLED + audit. T-11 on any HCM failure: status→CANCELLATION_FAILED
- *    + audit WITHOUT touching the balance — CANCELLING holds no reservation, so a
- *    `casRelease` here would corrupt the balance (ADR-012, guarded by a failing test).
+ * Structure mirrors {@link ApprovalSagaService}: three phases with the HCM call
+ * outside any DB transaction (holding a SQLite write tx across HTTP blocks all
+ * writers):
  *
- * The router ({@link RequestService.cancel}) has already gated state, future-date,
- * and authorization; this saga assumes an APPROVED future-dated request. If the
- * post-HCM commit loses the version race past the retry budget, the request is left
- * CANCELLING for the stuck-state sweep (Plan 06) — never force-committed (R-04).
+ * 1. T_retry_1 — availability check + APPROVAL_FAILED→APPROVING (status CAS) +
+ *    re-acquire reservation (reserved += days) + capture pre-total + audit with
+ *    `metadata: { retry: true }`.
+ * 2. HCM decrement with the SAME idempotency key (`<id>:decrement`) — HCM is
+ *    idempotent on a replayed key, so a prior confirmed result is returned as-is.
+ *    Note: if the original failure was arithmetic mismatch (F-04) the replay will
+ *    deterministically fail again; the admin's recourse is then to discard.
+ * 3. T_retry_2 — on success: casCommit + APPROVING→APPROVED + audit. On HCM
+ *    failure: fail() — APPROVING→APPROVAL_FAILED + audit.
+ *
+ * R-04 fix: inside the commit() OCC closure, compare the fresh balance total to
+ * the expected post-commit total (`preTotal − days`). If they match, a concurrent
+ * reconciliation already absorbed the HCM decrement; skip the total delta and only
+ * move the reservation (reserved -= days). See approval-saga.service.ts for the
+ * same fix on the primary path.
  */
 @Injectable()
-export class CancellationSagaService {
+export class ApprovalRetryService {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly balanceRepository: BalanceRepository,
@@ -55,53 +62,59 @@ export class CancellationSagaService {
     @Inject(HCM_ADJUSTER) private readonly hcm: HcmAdjuster,
     private readonly breaker: CircuitBreaker,
     @Inject(POINT_RECONCILIATION_QUEUE) private readonly pointQueue: PointReconciliationQueue,
-    // forwardRef: TimeOffModule <-> ReconciliationModule are mutually importing.
     @Inject(forwardRef(() => DriftDetectionService))
     private readonly driftDetection: DriftDetectionService,
   ) {}
 
   /**
-   * Runs the reverse saga for an APPROVED future-dated request (the router has
-   * already verified state, future-date, and authorization).
-   * @returns the request in its terminal saga state (CANCELLED or
-   *   CANCELLATION_FAILED), or CANCELLING if the commit was deferred to the sweep
-   * @throws HcmUnavailableError (503) when the breaker is OPEN at entry — the
-   *   request stays APPROVED, never entering CANCELLING (REQ-SYNC-06, REQ-DEF-07)
+   * Retries a stuck APPROVAL_FAILED request as an admin (T-05).
+   * @returns the request in its resulting state (APPROVED, APPROVAL_FAILED, or
+   *   APPROVING if the commit was deferred to the sweep)
+   * @throws RequestNotFoundError (404) when the request does not exist
+   * @throws InvalidTransitionError (409) when the request is not APPROVAL_FAILED
+   * @throws InsufficientBalanceError (409) when days exceed available balance
+   * @throws HcmUnavailableError (503) when the breaker is OPEN at entry
+   * @req REQ-LIFE-06
    */
-  async execute(requestId: string, actor: Principal): Promise<RequestResponse> {
+  async retry(requestId: string, actor: Principal): Promise<RequestResponse> {
     const correlationId = randomUUID();
     const request = await this.requestRepository.findById(requestId);
     if (!request) {
-      // Defensive only: the router pre-loaded and authorized this request before
-      // delegating, so a null here means it vanished between calls (or a misuse).
       throw new RequestNotFoundError();
     }
+    if (request.status !== 'APPROVAL_FAILED') {
+      throw new InvalidTransitionError(requestId);
+    }
 
-    // Pre-gate: fast-fail 503 BEFORE the APPROVED→CANCELLING transition.
-    // CANCELLING→APPROVED is not a legal back-transition (§5.1), so entering
-    // CANCELLING first would wedge the request; gating here keeps it
-    // non-transient (REQ-DEF-07) while fast-failing per REQ-SYNC-06.
+    // Pre-gate: fast-fail 503 BEFORE re-entering APPROVING. APPROVING→APPROVAL_FAILED
+    // is the failure path (not a forward transition), so leaving APPROVING stuck
+    // is handled by the sweep — gating here prevents a redundant failure cycle.
     if (this.breaker.isHardOpen()) {
-      await this.recordBreakerFastFail(request.id, actor, correlationId);
+      await this.recordBreakerFastFail(requestId, actor, correlationId);
       throw new HcmUnavailableError();
     }
 
     const days = request.daysRequested;
-    const delta = +days; // INCREMENT: restore the consumed days
-    const preTotal = await this.beginCancelling(
+    const delta = -days;
+
+    // Phase 1: availability check + re-enter APPROVING + re-acquire reservation.
+    const preTotal = await this.beginRetrying(
       request.id,
       request.employeeId,
       request.locationId,
       actor,
+      days,
       correlationId,
     );
 
-    const idempotencyKey = `${request.id}:increment`;
+    // Phase 2: HCM decrement with the same idempotency key as the original saga.
+    // HCM returns the cached result for a replayed key (idempotent by design).
+    const idempotencyKey = `${request.id}:decrement`;
     const hcmRequest = {
       employee_id: request.employeeId,
       location_id: request.locationId,
       delta,
-      operation_type: 'INCREMENT',
+      operation_type: 'DECREMENT',
       idempotency_key: idempotencyKey,
     };
     const startedAt = Date.now();
@@ -123,6 +136,7 @@ export class CancellationSagaService {
         new_total_days: verified.newTotalDays,
         hcm_correlation_id: verified.correlationId,
         outcome: 'confirmed',
+        retry: true,
       };
       const committed = await this.commit(
         request.id,
@@ -135,13 +149,11 @@ export class CancellationSagaService {
         correlationId,
         hcmMeta,
       );
-      // Post-commit drift sanity check (REQ-SYNC-04a): only on a real CANCELLED
-      // commit, never the deferred CANCELLING path. Fire-and-forget.
-      if (committed.status === 'CANCELLED') {
+      if (committed.status === 'APPROVED') {
         this.driftDetection.scheduleDriftCheck(
           request.employeeId,
           request.locationId,
-          'increment',
+          'decrement',
           preTotal + delta,
           request.id,
           correlationId,
@@ -150,9 +162,6 @@ export class CancellationSagaService {
       return committed;
     } catch (err) {
       if (err instanceof HcmBreakerOpenError) {
-        // The breaker OPENed mid-flight after we entered CANCELLING. We cannot
-        // roll back to APPROVED, so we route to CANCELLATION_FAILED with the F-01
-        // reason rather than leave the request transient (REQ-DEF-07).
         const hcmMeta = {
           request: hcmRequest,
           expected_pre_total: preTotal,
@@ -160,10 +169,14 @@ export class CancellationSagaService {
           duration_ms: Date.now() - startedAt,
           reason: 'hcm_unreachable',
           outcome: 'failed',
+          retry: true,
         };
         return this.fail(
           request.id,
+          request.employeeId,
+          request.locationId,
           actor,
+          days,
           new HcmTransportError('HCM breaker opened mid-flight'),
           correlationId,
           hcmMeta,
@@ -179,12 +192,18 @@ export class CancellationSagaService {
           actual: err instanceof HcmArithmeticMismatchError ? err.actual : undefined,
           reason: err.reason,
           outcome: 'failed',
+          retry: true,
         };
-        const failed = await this.fail(request.id, actor, err, correlationId, hcmMeta);
-        // After CANCELLATION_FAILED commits, enqueue a targeted point recon for the
-        // two single-balance drift signals — F-05 (HCM 409 insufficient) and F-04
-        // (ambiguous adjust). An INCREMENT 409-insufficient is unlikely, but the
-        // structure mirrors the forward saga (REQ-SYNC-04, REQ-SYNC-08).
+        const failed = await this.fail(
+          request.id,
+          request.employeeId,
+          request.locationId,
+          actor,
+          days,
+          err,
+          correlationId,
+          hcmMeta,
+        );
         if (
           err instanceof HcmInsufficientBalanceError ||
           err instanceof HcmArithmeticMismatchError
@@ -202,41 +221,60 @@ export class CancellationSagaService {
     }
   }
 
-  /** T-09: transition to CANCELLING, capture the pre-call local total, audit. */
-  private async beginCancelling(
+  /**
+   * T_retry_1: check availability, re-acquire reservation, transition to APPROVING,
+   * capture the pre-call local total, audit with retry metadata.
+   */
+  private async beginRetrying(
     requestId: string,
     employeeId: string,
     locationId: string,
     actor: Principal,
+    days: number,
     correlationId: string,
   ): Promise<number> {
-    return this.dataSource.transaction(async (manager) => {
-      await this.requestRepository.casStatus(
-        requestId,
-        'APPROVED',
-        'CANCELLING',
-        { decidedBy: actor.sub },
-        manager,
-      );
-      const balance = await this.requireBalance(employeeId, locationId, manager);
-      await this.auditService.record(
-        {
-          actorId: actor.sub,
-          actorType: actorTypeOf(actor),
-          entityType: 'REQUEST',
-          entityId: requestId,
-          action: 'request.cancelling',
-          beforeState: { status: 'APPROVED' },
-          afterState: { status: 'CANCELLING' },
-          correlationId,
-        },
-        manager,
-      );
-      return balance.totalDays;
-    });
+    return withOccRetry(() =>
+      this.dataSource.transaction(async (manager) => {
+        const balance = await this.requireBalance(employeeId, locationId, manager);
+        const available = balance.totalDays - balance.reservedDays;
+        if (available < days) {
+          throw new InsufficientBalanceError(available, days);
+        }
+        // Re-acquire the reservation that was released when the request entered
+        // APPROVAL_FAILED (T-04 released reserved -= days). `casReserve` does
+        // `reserved_days += delta`, which is the re-acquisition.
+        await this.balanceRepository.casReserve(balance.id, balance.version, days, manager);
+        await this.requestRepository.casStatus(
+          requestId,
+          'APPROVAL_FAILED',
+          'APPROVING',
+          { decidedBy: actor.sub },
+          manager,
+        );
+        await this.auditService.record(
+          {
+            actorId: actor.sub,
+            actorType: actorTypeOf(actor),
+            entityType: 'REQUEST',
+            entityId: requestId,
+            action: 'request.approving',
+            beforeState: { status: 'APPROVAL_FAILED' },
+            afterState: { status: 'APPROVING' },
+            metadata: { retry: true },
+            correlationId,
+          },
+          manager,
+        );
+        return balance.totalDays;
+      }),
+    );
   }
 
-  /** T-10 success: commit the increment (total += days, reserved UNCHANGED), audit. */
+  /**
+   * T_retry_2 success: commit the decrement, transition to APPROVED, audit.
+   * R-04 fix: compare fresh balance total to expectedPostTotal; if already applied
+   * by reconciliation, skip the total delta and only clear the reservation.
+   */
   private async commit(
     requestId: string,
     employeeId: string,
@@ -248,33 +286,25 @@ export class CancellationSagaService {
     correlationId: string,
     hcmMeta: Record<string, unknown>,
   ): Promise<RequestResponse> {
-    // R-04 fix (Plan 06): if a batch reconciliation has already absorbed the HCM
-    // increment between our OCC retries, the fresh balance total already equals
-    // `preTotal + days`. Re-applying the delta would double-add. We detect this
-    // by comparing the fresh total to the expected post-commit total; if they
-    // match, we skip the total delta (reserved is 0 for CANCELLING, so no change).
-    const expectedPostTotal = preTotal + days;
+    const expectedPostTotal = preTotal + -days; // preTotal - days
     try {
       return await withOccRetry(() =>
         this.dataSource.transaction(async (manager) => {
           const balance = await this.requireBalance(employeeId, locationId, manager);
-          // reservedDelta = 0: CANCELLING holds NO reservation (APPROVED already
-          // cleared reserved at T-03), so only total_days moves (ADR-012).
-          // R-04: skip total delta if reconciliation already applied it.
           const alreadyApplied = balance.totalDays === expectedPostTotal;
-          const totalDelta = alreadyApplied ? 0 : +days;
+          const totalDelta = alreadyApplied ? 0 : -days;
           await this.balanceRepository.casCommit(
             balance.id,
             balance.version,
             totalDelta,
-            0,
+            -days,
             hcmCorrelationId,
             manager,
           );
           await this.requestRepository.casStatus(
             requestId,
-            'CANCELLING',
-            'CANCELLED',
+            'APPROVING',
+            'APPROVED',
             { hcmCorrelationId, decidedBy: actor.sub, decidedAt: new Date() },
             manager,
           );
@@ -284,8 +314,8 @@ export class CancellationSagaService {
               actorType: actorTypeOf(actor),
               entityType: 'REQUEST',
               entityId: requestId,
-              action: 'request.cancelled',
-              afterState: { status: 'CANCELLED' },
+              action: 'request.approved',
+              afterState: { status: 'APPROVED' },
               correlationId,
             },
             manager,
@@ -295,7 +325,7 @@ export class CancellationSagaService {
               actorType: 'SYSTEM',
               entityType: 'HCM_CALL',
               entityId: requestId,
-              action: 'hcm.increment.confirmed',
+              action: 'hcm.decrement.confirmed',
               metadata: hcmMeta,
               correlationId,
             },
@@ -307,9 +337,6 @@ export class CancellationSagaService {
       );
     } catch (err) {
       if (err instanceof OccConflictError) {
-        // HCM confirmed but the local commit lost the version race past the retry
-        // budget. Leave the request CANCELLING for the stuck-state sweep (Plan 06);
-        // never force a CAS-less write (R-04).
         return this.deferCommit(requestId, correlationId, hcmMeta);
       }
       throw err;
@@ -317,23 +344,26 @@ export class CancellationSagaService {
   }
 
   /**
-   * T-11 failure: transition to CANCELLATION_FAILED, audit. Deliberately does NOT
-   * call `casRelease`: CANCELLING holds no reservation, so a release would corrupt
-   * the balance — the named copy-paste hazard from ADR-012, guarded by a test.
+   * T_retry_2 failure: release the reservation, transition to APPROVAL_FAILED, audit.
    */
   private async fail(
     requestId: string,
+    employeeId: string,
+    locationId: string,
     actor: Principal,
+    days: number,
     error: HcmError,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
   ): Promise<RequestResponse> {
     return withOccRetry(() =>
       this.dataSource.transaction(async (manager) => {
+        const balance = await this.requireBalance(employeeId, locationId, manager);
+        await this.balanceRepository.casRelease(balance.id, balance.version, -days, manager);
         await this.requestRepository.casStatus(
           requestId,
-          'CANCELLING',
-          'CANCELLATION_FAILED',
+          'APPROVING',
+          'APPROVAL_FAILED',
           { failureReason: error.reason, decidedBy: actor.sub, decidedAt: new Date() },
           manager,
         );
@@ -343,8 +373,8 @@ export class CancellationSagaService {
             actorType: actorTypeOf(actor),
             entityType: 'REQUEST',
             entityId: requestId,
-            action: 'request.cancellation_failed',
-            afterState: { status: 'CANCELLATION_FAILED', failureReason: error.reason },
+            action: 'request.approval_failed',
+            afterState: { status: 'APPROVAL_FAILED', failureReason: error.reason },
             correlationId,
           },
           manager,
@@ -388,11 +418,6 @@ export class CancellationSagaService {
     return toRequestResponse(current!);
   }
 
-  /**
-   * Audits a breaker fast-fail at the entry pre-gate. No state transition occurs
-   * (the request stays APPROVED); this entry exists so an operator can answer
-   * "why did this cancel 503?" (TRD §11.2).
-   */
   private async recordBreakerFastFail(
     requestId: string,
     actor: Principal,
@@ -415,9 +440,9 @@ export class CancellationSagaService {
   }
 
   private failureAction(error: HcmError): string {
-    if (error instanceof HcmArithmeticMismatchError) return 'hcm.increment.ambiguous';
-    if (error instanceof HcmInsufficientBalanceError) return 'hcm.increment.insufficient_balance';
-    return 'hcm.increment.failed';
+    if (error instanceof HcmArithmeticMismatchError) return 'hcm.decrement.ambiguous';
+    if (error instanceof HcmInsufficientBalanceError) return 'hcm.decrement.insufficient_balance';
+    return 'hcm.decrement.failed';
   }
 
   private async requireBalance(employeeId: string, locationId: string, manager: EntityManager) {

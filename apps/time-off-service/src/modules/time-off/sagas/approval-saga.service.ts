@@ -140,6 +140,7 @@ export class ApprovalSagaService {
         request.locationId,
         actor,
         days,
+        preTotal,
         verified.correlationId,
         correlationId,
         hcmMeta,
@@ -270,26 +271,29 @@ export class ApprovalSagaService {
     locationId: string,
     actor: Principal,
     days: number,
+    preTotal: number,
     hcmCorrelationId: string,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
   ): Promise<RequestResponse> {
-    // Known concurrency hazard (deferred to Plan 06, R-04 family): if a batch
-    // reconciliation writes an absolute total that already absorbed this HCM
-    // decrement BETWEEN our retries, the retry re-reads the fresh balance and
-    // re-applies its fixed `-days` delta on top — transiently UNDER-counting
-    // local total_days. INV-01/INV-02 still hold throughout, and the next
-    // reconciliation converges the total back to HCM. The durable fix (carry an
-    // expectedPostCommitTotal across retries and skip the delta when the fresh
-    // balance already reflects it) is out of scope for cycle-04.
+    // R-04 fix (Plan 06): if a batch reconciliation has already absorbed the HCM
+    // decrement between our OCC retries, the fresh balance total already equals
+    // `preTotal - days`. Re-applying the delta would double-deduct. We detect
+    // this by comparing the fresh total to the expected post-commit total; if they
+    // match, we skip the total delta and only clear the reservation (reserved -= days).
+    const expectedPostTotal = preTotal + -days; // preTotal - days
     try {
       return await withOccRetry(() =>
         this.dataSource.transaction(async (manager) => {
           const balance = await this.requireBalance(employeeId, locationId, manager);
+          // Idempotent total application: if reconciliation already absorbed the
+          // HCM decrement, skip the total delta — only move reserved_days.
+          const alreadyApplied = balance.totalDays === expectedPostTotal;
+          const totalDelta = alreadyApplied ? 0 : -days;
           await this.balanceRepository.casCommit(
             balance.id,
             balance.version,
-            -days,
+            totalDelta,
             -days,
             hcmCorrelationId,
             manager,

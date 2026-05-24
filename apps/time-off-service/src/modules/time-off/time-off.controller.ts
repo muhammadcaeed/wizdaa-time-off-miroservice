@@ -5,6 +5,8 @@ import type { Principal } from '../auth/principal';
 import { Roles } from '../auth/roles.decorator';
 import { RequestService } from './request.service';
 import { ApprovalSagaService } from './sagas/approval-saga.service';
+import { ApprovalRetryService } from './sagas/approval-retry.service';
+import { CancellationRetryService } from './sagas/cancellation-retry.service';
 import type { RequestResponse } from './dto/request-response.dto';
 import { SubmitRequestDto } from './dto/submit-request.dto';
 
@@ -14,6 +16,8 @@ export class TimeOffController {
   constructor(
     private readonly requestService: RequestService,
     private readonly approvalSaga: ApprovalSagaService,
+    private readonly approvalRetry: ApprovalRetryService,
+    private readonly cancellationRetry: CancellationRetryService,
   ) {}
 
   /**
@@ -84,5 +88,43 @@ export class TimeOffController {
     const outcome = await this.requestService.cancel(actor, id);
     res.status(outcome.accepted ? 202 : 200);
     return outcome.request;
+  }
+
+  /**
+   * Admin retries a stuck APPROVAL_FAILED request (T-05). Runs the retry saga
+   * inline and returns 202 with the request in its resulting state.
+   * @param id the request id
+   * @param actor the acting admin
+   * @throws RequestNotFoundError (404), InvalidTransitionError (409),
+   *   InsufficientBalanceError (409), HcmUnavailableError (503)
+   * @req REQ-LIFE-06
+   */
+  @Post(':id/approval-retries')
+  @Roles('ADMIN')
+  @HttpCode(202)
+  async retryApproval(
+    @Param('id') id: string,
+    @CurrentUser() actor: Principal,
+  ): Promise<RequestResponse> {
+    return this.approvalRetry.retry(id, actor);
+  }
+
+  /**
+   * Admin retries a stuck CANCELLATION_FAILED request (T-12). Runs the retry saga
+   * inline and returns 202 with the request in its resulting state.
+   * @param id the request id
+   * @param actor the acting admin
+   * @throws RequestNotFoundError (404), InvalidTransitionError (409),
+   *   HcmUnavailableError (503)
+   * @req REQ-LIFE-12
+   */
+  @Post(':id/cancellation-retries')
+  @Roles('ADMIN')
+  @HttpCode(202)
+  async retryCancellation(
+    @Param('id') id: string,
+    @CurrentUser() actor: Principal,
+  ): Promise<RequestResponse> {
+    return this.cancellationRetry.retry(id, actor);
   }
 }
