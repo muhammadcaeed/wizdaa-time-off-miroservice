@@ -14,6 +14,7 @@ const opArb: fc.Arbitrary<Op> = fc.oneof(
 );
 
 /**
+ * @req REQ-DEF-01
  * @req INV-01
  * @req INV-02
  * @req INV-03
