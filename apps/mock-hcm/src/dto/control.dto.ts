@@ -47,6 +47,24 @@ export class ScenarioEndpointsDto {
   @IsOptional()
   @IsIn(SCENARIOS)
   get_balance?: ScenarioName;
+
+  @IsOptional()
+  @IsIn(SCENARIOS)
+  batch?: ScenarioName;
+}
+
+/** Silently drift a stored balance, leaving last_modified_at untouched (mock-hcm.md §3.3). */
+export class DriftBalanceDto {
+  @IsString()
+  @MinLength(1)
+  employee_id!: string;
+
+  @IsString()
+  @MinLength(1)
+  location_id!: string;
+
+  @IsInt()
+  total_days!: number;
 }
 
 /** Optional scope narrowing a scenario (mock-hcm.md §3.1). */

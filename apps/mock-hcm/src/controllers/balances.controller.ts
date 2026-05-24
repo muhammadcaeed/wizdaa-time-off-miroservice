@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  BadRequestException,
   Body,
   ConflictException,
   Controller,
@@ -16,15 +17,19 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { AdjustQueryDto, AdjustRequestDto } from '../dto/adjust.dto';
+import { BatchQueryDto } from '../dto/batch.dto';
 import { IdempotencyService } from '../services/idempotency.service';
 import { type ScenarioName, ScenarioService } from '../services/scenario.service';
-import { StorageService } from '../services/storage.service';
+import { type BalanceRow, StorageService } from '../services/storage.service';
 
 /** Default latency injected by the `slow` scenario (mock-hcm.md §4). */
 const DEFAULT_SLOW_LATENCY_MS = 2000;
 
 /** Default failure fraction for the `flaky` scenario (mock-hcm.md §4). */
 const DEFAULT_FAIL_RATE = 0.3;
+
+/** Default page size for the batch endpoint when `limit` is omitted (api-contract.md §5). */
+const DEFAULT_BATCH_LIMIT = 50;
 
 /** Adjust response shape (mock-hcm.md §2.2, TRD §9.1). */
 interface AdjustResponse {
@@ -41,6 +46,12 @@ interface BalancesResponse {
   balances: { location_id: string; total_days: number; last_modified_at: string }[];
 }
 
+/** Paginated batch response shape (mock-hcm.md §2.3, api-contract.md §5). */
+interface BatchResponse {
+  data: BalanceRow[];
+  pagination: { next_cursor: string | null; has_more: boolean };
+}
+
 /**
  * Mirrors the assumed HCM balance surface (mock-hcm.md §2, TRD §9.1).
  */
@@ -51,6 +62,68 @@ export class BalancesController {
     private readonly scenarios: ScenarioService,
     private readonly idempotency: IdempotencyService,
   ) {}
+
+  /**
+   * Returns the corpus of balances modified at or after `since`, paginated with
+   * an opaque cursor (mock-hcm.md §2.3, api-contract.md §5). Declared before the
+   * `:employee_id` route so the literal `batch` segment isn't captured as a path
+   * param.
+   *
+   * Chaos scenarios are resolved corpus-wide via an unscoped `resolve('batch')`
+   * and applied exactly as the adjust endpoint does (mock-hcm.md §4): `slow`
+   * delays, `down` 503s, `flaky` 5xxs deterministically, `network-failure`
+   * destroys the socket. The `@Res` handle serves both the socket-destroy path
+   * and the JSON write.
+   *
+   * @param query `since` (required ISO-8601), opaque `cursor`, `limit`, and the
+   *   per-request chaos knobs (`latency_ms`, `fail_rate`)
+   * @param res the raw express response (for socket destroy + serialization)
+   * @returns nothing; the response is written via `res`
+   * @throws BadRequestException if the cursor is malformed
+   * @throws ServiceUnavailableException under the `down`/`flaky` scenarios
+   */
+  @Get('batch')
+  async batch(@Query() query: BatchQueryDto, @Res() res: Response): Promise<void> {
+    // Corpus-wide query: empty scope ids mean only unscoped batch scenarios apply.
+    const scenario = this.scenarios.resolve('batch', '', '');
+
+    if (scenario === 'slow') {
+      await delay(query.latency_ms ?? DEFAULT_SLOW_LATENCY_MS);
+    }
+
+    if (scenario === 'network-failure') {
+      res.socket?.destroy();
+      return;
+    }
+
+    if (scenario === 'down') {
+      throw new ServiceUnavailableException('HCM is down (mock scenario)');
+    }
+
+    if (
+      scenario === 'flaky' &&
+      this.scenarios.shouldFlakyFail('batch', query.fail_rate ?? DEFAULT_FAIL_RATE)
+    ) {
+      throw new ServiceUnavailableException('HCM flaky failure (mock scenario)');
+    }
+
+    let page;
+    try {
+      page = this.storage.batchSince(
+        new Date(query.since),
+        query.cursor,
+        query.limit ?? DEFAULT_BATCH_LIMIT,
+      );
+    } catch {
+      throw new BadRequestException('Malformed cursor');
+    }
+
+    const response: BatchResponse = {
+      data: page.rows,
+      pagination: { next_cursor: page.nextCursor, has_more: page.hasMore },
+    };
+    res.status(HttpStatus.OK).json(response);
+  }
 
   /**
    * Returns every balance row for an employee.
