@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { Observable, tap } from 'rxjs';
+import { Observable } from 'rxjs';
 import { IdempotencyConflictError } from '../../common/errors/idempotency-conflict.error';
 import { IdempotencyKeyInvalidError } from '../../common/errors/idempotency-key-invalid.error';
 import { IdempotencyService } from './idempotency.service';
@@ -103,15 +103,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
           req.idempotencyKey = key;
           req.idempotencyHash = hash;
 
-          next
-            .handle()
-            .pipe(
-              tap(() => {
-                // Record is written by the service layer inside its transaction.
-                // Nothing to do here.
-              }),
-            )
-            .subscribe(subscriber);
+          // Record is written by the service layer inside its transaction.
+          next.handle().subscribe(subscriber);
         })
         .catch((err: unknown) => subscriber.error(err));
     });
