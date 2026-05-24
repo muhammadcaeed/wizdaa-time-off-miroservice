@@ -1,4 +1,5 @@
-import { IsIn, IsInt, IsString, MinLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsIn, IsInt, IsNumber, IsOptional, Max, Min, MinLength, IsString } from 'class-validator';
 
 /**
  * Adjust request body (mock-hcm.md §2.2, TRD §9.1). Independent from the main
@@ -22,4 +23,24 @@ export class AdjustRequestDto {
   @IsString()
   @MinLength(1)
   source_reference!: string;
+}
+
+/**
+ * Per-request chaos knobs for the adjust endpoint (mock-hcm.md §4). Override
+ * the `slow` and `flaky` scenario defaults. Parsed from the query string;
+ * `@Type` coerces the inbound strings to numbers.
+ */
+export class AdjustQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  latency_ms?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  fail_rate?: number;
 }
