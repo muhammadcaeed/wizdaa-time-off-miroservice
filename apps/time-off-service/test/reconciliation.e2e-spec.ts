@@ -261,6 +261,14 @@ describe('Reconciliation surface, post-commit drift, and F-05 enqueue (e2e)', ()
       .set('Authorization', mgrAuth)
       .expect(403);
   });
+
+  it('400s a list request with a malformed cursor', async () => {
+    const res = await request(ctx.httpServer)
+      .get('/api/v1/reconciliations?cursor=not-a-valid-cursor')
+      .set('Authorization', adminAuth)
+      .expect(400);
+    expect((res.body as { type: string }).type).toBe('/errors/invalid-cursor');
+  });
 });
 
 /**
