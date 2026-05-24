@@ -7,6 +7,7 @@ import { AuthorizationService } from '../../apps/time-off-service/src/modules/au
 import { EmployeeRepository } from '../../apps/time-off-service/src/modules/auth/employee.repository';
 import type { Principal } from '../../apps/time-off-service/src/modules/auth/principal';
 import { BalanceRepository } from '../../apps/time-off-service/src/modules/balances/balance.repository';
+import { CircuitBreaker } from '../../apps/time-off-service/src/modules/hcm-sync/circuit-breaker';
 import type { HcmAdjuster } from '../../apps/time-off-service/src/modules/hcm-sync/hcm-adjuster';
 import { RequestRepository } from '../../apps/time-off-service/src/modules/time-off/request.repository';
 import { RequestService } from '../../apps/time-off-service/src/modules/time-off/request.service';
@@ -18,6 +19,14 @@ const confirmingHcm: HcmAdjuster = {
   adjustBalance: ({ expectedPreTotal, delta }) =>
     Promise.resolve({ newTotalDays: expectedPreTotal + delta, correlationId: 'hcm_ok' }),
 };
+
+/** A breaker held CLOSED; the property driver never exercises HCM failure. */
+const closedBreaker = (): CircuitBreaker =>
+  new CircuitBreaker(
+    { failureThreshold: 5, failureRate: 0.5, cooldownMs: 30_000, probeDeadlineMs: 10_000 },
+    Date.now,
+    { info: () => undefined } as never,
+  );
 
 export type Op =
   | { kind: 'submit'; emp: number; days: number }
@@ -50,7 +59,7 @@ export class ApplicationDriver {
     const audit = new AuditService(new AuditRepository());
     const authz = new AuthorizationService(new EmployeeRepository(dataSource));
     const requestService = new RequestService(dataSource, balanceRepo, requestRepo, audit, authz);
-    const saga = new ApprovalSagaService(dataSource, balanceRepo, requestRepo, audit, authz, confirmingHcm);
+    const saga = new ApprovalSagaService(dataSource, balanceRepo, requestRepo, audit, authz, confirmingHcm, closedBreaker());
 
     await dataSource.getRepository(Location).insert({ id: 'loc_0', name: 'HQ', countryCode: 'US' });
     await dataSource.getRepository(Employee).insert({

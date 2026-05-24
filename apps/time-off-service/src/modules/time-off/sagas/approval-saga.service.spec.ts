@@ -7,6 +7,8 @@ import { AuditLog, Balance, Employee, TimeOffRequest } from '../../../database/e
 import { AuthorizationService } from '../../auth/authorization.service';
 import { EmployeeRepository } from '../../auth/employee.repository';
 import type { Principal } from '../../auth/principal';
+import type { PinoLogger } from 'nestjs-pino';
+import { CircuitBreaker } from '../../hcm-sync/circuit-breaker';
 import type { HcmAdjuster } from '../../hcm-sync/hcm-adjuster';
 import { HcmArithmeticMismatchError } from '../../hcm-sync/hcm.errors';
 import { BalanceRepository } from '../../balances/balance.repository';
@@ -28,7 +30,10 @@ describe('ApprovalSagaService (forward saga T-02/03/04)', () => {
 
   const manager: Principal = { sub: 'mgr_001', roles: ['MANAGER'] };
 
-  function buildSaga(hcm: HcmAdjuster): ApprovalSagaService {
+  function buildSaga(
+    hcm: HcmAdjuster,
+    breaker: CircuitBreaker = closedBreaker(),
+  ): ApprovalSagaService {
     return new ApprovalSagaService(
       dataSource,
       balanceRepo,
@@ -36,6 +41,16 @@ describe('ApprovalSagaService (forward saga T-02/03/04)', () => {
       new AuditService(new AuditRepository()),
       new AuthorizationService(new EmployeeRepository(dataSource)),
       hcm,
+      breaker,
+    );
+  }
+
+  /** A real breaker held CLOSED so the entry pre-gate is a no-op for these specs. */
+  function closedBreaker(): CircuitBreaker {
+    return new CircuitBreaker(
+      { failureThreshold: 5, failureRate: 0.5, cooldownMs: 30_000, probeDeadlineMs: 10_000 },
+      Date.now,
+      { info: () => undefined } as unknown as PinoLogger,
     );
   }
 

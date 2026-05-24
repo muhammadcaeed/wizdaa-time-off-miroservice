@@ -10,11 +10,15 @@ import { OccConflictError } from '../../../common/persistence/occ-conflict.error
 import { withOccRetry } from '../../../common/persistence/with-occ-retry';
 import { actorTypeOf, type Principal } from '../../auth/principal';
 import { AuthorizationService } from '../../auth/authorization.service';
+import { HcmUnavailableError } from '../../../common/errors/hcm-unavailable.error';
+import { CircuitBreaker } from '../../hcm-sync/circuit-breaker';
 import { HCM_ADJUSTER, type HcmAdjuster } from '../../hcm-sync/hcm-adjuster';
 import {
   HcmArithmeticMismatchError,
+  HcmBreakerOpenError,
   HcmError,
   HcmInsufficientBalanceError,
+  HcmTransportError,
 } from '../../hcm-sync/hcm.errors';
 import { BalanceRepository } from '../../balances/balance.repository';
 import { RequestRepository } from '../request.repository';
@@ -44,6 +48,7 @@ export class ApprovalSagaService {
     private readonly auditService: AuditService,
     private readonly authorization: AuthorizationService,
     @Inject(HCM_ADJUSTER) private readonly hcm: HcmAdjuster,
+    private readonly breaker: CircuitBreaker,
   ) {}
 
   /**
@@ -53,6 +58,9 @@ export class ApprovalSagaService {
    * @throws RequestNotFoundError (404) when the request does not exist
    * @throws ForbiddenError (403) when the actor may not approve it
    * @throws InvalidTransitionError (409) when the request is not SUBMITTED
+   * @throws HcmUnavailableError (503) when the breaker is OPEN at entry — the
+   *   request stays SUBMITTED, never entering a transient state (REQ-SYNC-06,
+   *   REQ-DEF-07, TRD §11.2)
    */
   async execute(requestId: string, actor: Principal): Promise<RequestResponse> {
     const correlationId = randomUUID();
@@ -65,6 +73,18 @@ export class ApprovalSagaService {
         : new ForbiddenError();
     }
     await this.authorization.assertCanApprove(actor, request.employeeId);
+
+    // Pre-gate: if the breaker is already OPEN, fast-fail with 503 BEFORE the
+    // SUBMITTED→APPROVING transition. APPROVING→SUBMITTED is not a legal
+    // transition (state machine §5.1), so entering APPROVING first would leave
+    // the request stuck; gating here keeps it non-transient (REQ-DEF-07) while
+    // still fast-failing per REQ-SYNC-06. HALF_OPEN is deliberately allowed
+    // through — the decorator's canPass() claims the single probe; concurrent
+    // callers fast-fail there and surface mid-flight (handled below).
+    if (this.breaker.snapshot().state === 'OPEN') {
+      await this.recordBreakerFastFail(request.id, actor, correlationId);
+      throw new HcmUnavailableError();
+    }
 
     const days = request.daysRequested;
     const delta = -days;
@@ -115,6 +135,31 @@ export class ApprovalSagaService {
         hcmMeta,
       );
     } catch (err) {
+      if (err instanceof HcmBreakerOpenError) {
+        // The breaker OPENed mid-flight (concurrent failures or a lost
+        // HALF_OPEN probe) after we had already entered APPROVING. We cannot
+        // roll back to SUBMITTED, so we route to APPROVAL_FAILED with the F-01
+        // reason rather than leave the request transient (REQ-DEF-07). The
+        // 503/`hcm-unavailable` fast-fail is reserved for the entry pre-gate.
+        const hcmMeta = {
+          request: hcmRequest,
+          expected_pre_total: preTotal,
+          delta,
+          duration_ms: Date.now() - startedAt,
+          reason: 'hcm_unreachable',
+          outcome: 'failed',
+        };
+        return this.fail(
+          request.id,
+          request.employeeId,
+          request.locationId,
+          actor,
+          days,
+          new HcmTransportError('HCM breaker opened mid-flight'),
+          correlationId,
+          hcmMeta,
+        );
+      }
       if (err instanceof HcmError) {
         const hcmMeta = {
           request: hcmRequest,
@@ -316,6 +361,32 @@ export class ApprovalSagaService {
     );
     const current = await this.requestRepository.findById(requestId);
     return toRequestResponse(current!);
+  }
+
+  /**
+   * Audits a breaker fast-fail at the entry pre-gate. No state transition
+   * occurs (the request stays SUBMITTED); this entry exists purely so an
+   * operator can answer "why did this approval 503?" (TRD §11.2).
+   */
+  private async recordBreakerFastFail(
+    requestId: string,
+    actor: Principal,
+    correlationId: string,
+  ): Promise<void> {
+    await this.dataSource.transaction((manager) =>
+      this.auditService.record(
+        {
+          actorId: actor.sub,
+          actorType: actorTypeOf(actor),
+          entityType: 'HCM_CALL',
+          entityId: requestId,
+          action: 'hcm.breaker.fast_failed',
+          metadata: { breaker: this.breaker.snapshot(), reason: 'hcm_unavailable' },
+          correlationId,
+        },
+        manager,
+      ),
+    );
   }
 
   private failureAction(error: HcmError): string {
