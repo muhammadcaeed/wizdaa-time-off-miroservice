@@ -122,6 +122,24 @@ export class BalanceRepository {
     });
   }
 
+  /**
+   * Stamps `last_hcm_sync_at = now()` without touching the version or counters
+   * (TRD §9.3 no-drift branch). Deliberately carries NO version predicate: a
+   * metadata touch must not race a concurrent saga write, and observing equal
+   * totals proves there is nothing to reconcile, so there is no CAS to lose.
+   * @param id the balance row id
+   * @param manager the active transaction's entity manager
+   * @returns nothing; the sync timestamp is refreshed in place
+   */
+  async touchHcmSyncAt(id: string, manager: EntityManager): Promise<void> {
+    await manager
+      .createQueryBuilder()
+      .update(Balance)
+      .set({ lastHcmSyncAt: new Date() })
+      .where('id = :id', { id })
+      .execute();
+  }
+
   private async cas(
     manager: EntityManager,
     id: string,
