@@ -26,6 +26,8 @@ import {
 } from '../../reconciliation/point-reconciliation-queue';
 import { RequestRepository } from '../request.repository';
 import { toRequestResponse, type RequestResponse } from '../dto/request-response.dto';
+import type { IdempotencyContext } from '../request.service';
+import { IdempotencyService } from '../idempotency.service';
 
 /**
  * Reverse cancellation saga (TRD §3.2 Flow C, §5.2 T-09/10/11). The exact mirror
@@ -58,17 +60,23 @@ export class CancellationSagaService {
     // forwardRef: TimeOffModule <-> ReconciliationModule are mutually importing.
     @Inject(forwardRef(() => DriftDetectionService))
     private readonly driftDetection: DriftDetectionService,
+    private readonly idempotencyService: IdempotencyService,
   ) {}
 
   /**
    * Runs the reverse saga for an APPROVED future-dated request (the router has
    * already verified state, future-date, and authorization).
+   * @param idem optional idempotency context threaded from the interceptor
    * @returns the request in its terminal saga state (CANCELLED or
    *   CANCELLATION_FAILED), or CANCELLING if the commit was deferred to the sweep
    * @throws HcmUnavailableError (503) when the breaker is OPEN at entry — the
    *   request stays APPROVED, never entering CANCELLING (REQ-SYNC-06, REQ-DEF-07)
    */
-  async execute(requestId: string, actor: Principal): Promise<RequestResponse> {
+  async execute(
+    requestId: string,
+    actor: Principal,
+    idem?: IdempotencyContext,
+  ): Promise<RequestResponse> {
     const correlationId = randomUUID();
     const request = await this.requestRepository.findById(requestId);
     if (!request) {
@@ -134,6 +142,7 @@ export class CancellationSagaService {
         verified.correlationId,
         correlationId,
         hcmMeta,
+        idem,
       );
       // Post-commit drift sanity check (REQ-SYNC-04a): only on a real CANCELLED
       // commit, never the deferred CANCELLING path. Fire-and-forget.
@@ -167,6 +176,7 @@ export class CancellationSagaService {
           new HcmTransportError('HCM breaker opened mid-flight'),
           correlationId,
           hcmMeta,
+          idem,
         );
       }
       if (err instanceof HcmError) {
@@ -180,7 +190,7 @@ export class CancellationSagaService {
           reason: err.reason,
           outcome: 'failed',
         };
-        const failed = await this.fail(request.id, actor, err, correlationId, hcmMeta);
+        const failed = await this.fail(request.id, actor, err, correlationId, hcmMeta, idem);
         // After CANCELLATION_FAILED commits, enqueue a targeted point recon for the
         // two single-balance drift signals — F-05 (HCM 409 insufficient) and F-04
         // (ambiguous adjust). An INCREMENT 409-insufficient is unlikely, but the
@@ -247,6 +257,7 @@ export class CancellationSagaService {
     hcmCorrelationId: string,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
     // R-04 fix (Plan 06): if a batch reconciliation has already absorbed the HCM
     // increment between our OCC retries, the fresh balance total already equals
@@ -302,7 +313,10 @@ export class CancellationSagaService {
             manager,
           );
           const updated = await this.requestRepository.findById(requestId, manager);
-          return toRequestResponse(updated!);
+          const response = toRequestResponse(updated!);
+          // 202 is the cancel-APPROVED endpoint status code.
+          await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+          return response;
         }),
       );
     } catch (err) {
@@ -310,7 +324,7 @@ export class CancellationSagaService {
         // HCM confirmed but the local commit lost the version race past the retry
         // budget. Leave the request CANCELLING for the stuck-state sweep (Plan 06);
         // never force a CAS-less write (R-04).
-        return this.deferCommit(requestId, correlationId, hcmMeta);
+        return this.deferCommit(requestId, correlationId, hcmMeta, idem);
       }
       throw err;
     }
@@ -327,6 +341,7 @@ export class CancellationSagaService {
     error: HcmError,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
     return withOccRetry(() =>
       this.dataSource.transaction(async (manager) => {
@@ -361,7 +376,10 @@ export class CancellationSagaService {
           manager,
         );
         const updated = await this.requestRepository.findById(requestId, manager);
-        return toRequestResponse(updated!);
+        const response = toRequestResponse(updated!);
+        // 202 is the cancel-APPROVED endpoint status code.
+        await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+        return response;
       }),
     );
   }
@@ -370,9 +388,14 @@ export class CancellationSagaService {
     requestId: string,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
-    await this.dataSource.transaction((manager) =>
-      this.auditService.record(
+    const current = await this.requestRepository.findById(requestId);
+    const response = toRequestResponse(current!);
+    // Record idempotency inside the deferred-commit audit transaction so a client
+    // replay returns the same CANCELLING response without re-running the saga.
+    await this.dataSource.transaction(async (manager) => {
+      await this.auditService.record(
         {
           actorType: 'SYSTEM',
           entityType: 'REQUEST',
@@ -382,10 +405,11 @@ export class CancellationSagaService {
           correlationId,
         },
         manager,
-      ),
-    );
-    const current = await this.requestRepository.findById(requestId);
-    return toRequestResponse(current!);
+      );
+      // 202 is the cancel-APPROVED endpoint status code.
+      await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+    });
+    return response;
   }
 
   /**

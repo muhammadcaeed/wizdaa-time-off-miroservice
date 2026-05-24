@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { bearer } from '../../../test/support/auth';
 import { bootstrapE2E, type E2EContext } from '../../../test/support/e2e';
@@ -74,6 +75,7 @@ describe('POST /api/v1/requests (e2e)', () => {
     await request(ctx.httpServer)
       .post('/api/v1/requests')
       .set('Authorization', bearer('emp_001', ['EMPLOYEE']))
+      .set('Idempotency-Key', randomUUID())
       .send({ ...submit('emp_001', 1), sneaky: 'x' })
       .expect(400);
   });
@@ -116,6 +118,7 @@ describe('POST /api/v1/requests (e2e)', () => {
     const res = await request(ctx.httpServer)
       .post('/api/v1/requests')
       .set('Authorization', bearer('emp_001', ['EMPLOYEE']))
+      .set('Idempotency-Key', randomUUID())
       .send(submit('emp_001', 4))
       .expect(201);
 
@@ -129,6 +132,7 @@ describe('POST /api/v1/requests (e2e)', () => {
     await request(ctx.httpServer)
       .post('/api/v1/requests')
       .set('Authorization', bearer('emp_001', ['EMPLOYEE']))
+      .set('Idempotency-Key', randomUUID())
       .send(submit('emp_001', 100))
       .expect(409);
   });
@@ -138,6 +142,7 @@ describe('POST /api/v1/requests (e2e)', () => {
       request(ctx.httpServer)
         .post('/api/v1/requests')
         .set('Authorization', bearer('emp_r01', ['EMPLOYEE']))
+        .set('Idempotency-Key', randomUUID())
         .send(submit('emp_r01', 3));
 
     const results = await Promise.all([post(), post()]);

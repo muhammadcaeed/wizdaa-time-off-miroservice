@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { bearer } from '../../../test/support/auth';
@@ -79,7 +80,10 @@ describe('Reconciliation surface, post-commit drift, and F-05 enqueue (e2e)', ()
   }
 
   const approve = (reqId: string) =>
-    request(ctx.httpServer).post(`/api/v1/requests/${reqId}/approve`).set('Authorization', mgrAuth);
+    request(ctx.httpServer)
+      .post(`/api/v1/requests/${reqId}/approve`)
+      .set('Authorization', mgrAuth)
+      .set('Idempotency-Key', randomUUID());
 
   /** Count of adjust calls the client has made, from the mock's call log. */
   async function adjustCallCount(): Promise<number> {
@@ -219,6 +223,7 @@ describe('Reconciliation surface, post-commit drift, and F-05 enqueue (e2e)', ()
       const res = await request(ctx.httpServer)
         .post('/api/v1/reconciliations')
         .set('Authorization', adminAuth)
+        .set('Idempotency-Key', randomUUID())
         .expect(409);
       expect((res.body as { type: string }).type).toBe('/errors/reconciliation-in-progress');
     } finally {
@@ -232,6 +237,7 @@ describe('Reconciliation surface, post-commit drift, and F-05 enqueue (e2e)', ()
     const triggered = await request(ctx.httpServer)
       .post('/api/v1/reconciliations')
       .set('Authorization', adminAuth)
+      .set('Idempotency-Key', randomUUID())
       .expect(202);
     const run = triggered.body as ReconciliationResponse;
     expect(['COMPLETED', 'COMPLETED_WITH_CONFLICTS']).toContain(run.status);
