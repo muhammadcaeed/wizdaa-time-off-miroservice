@@ -35,6 +35,9 @@ export class ReconciliationScheduler implements OnModuleInit {
    * @returns nothing
    */
   onModuleInit(): void {
+    // Production correctness depends on NODE_ENV being unset or non-'test': only
+    // a 'test' value suppresses the interval, so a misconfigured env silently
+    // disables scheduled reconciliation in production.
     if (this.configService.get<string>('NODE_ENV') === TEST_ENV) {
       this.logger.info(
         { event: 'reconciliation.scheduler.suppressed' },
