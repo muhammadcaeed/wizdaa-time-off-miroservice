@@ -127,17 +127,54 @@ export class BalancesController {
 
   /**
    * Returns every balance row for an employee.
+   *
+   * Chaos scenarios are resolved employee-scoped via `resolve('get_balance', …)`
+   * and applied exactly as the batch endpoint does (mock-hcm.md §4): `slow`
+   * delays, `down` 503s, `flaky` 5xxs deterministically, `network-failure`
+   * destroys the socket. The `@Res` handle serves both the socket-destroy path
+   * and the JSON write.
+   *
    * @param employeeId employee identifier from the path
-   * @returns 200 with the employee's balances
+   * @param query the per-request chaos knobs (`latency_ms`, `fail_rate`)
+   * @param res the raw express response (for socket destroy + serialization)
+   * @returns nothing; the response is written via `res`
    * @throws NotFoundException if the employee is unknown
+   * @throws ServiceUnavailableException under the `down`/`flaky` scenarios
    */
   @Get(':employee_id')
-  getBalances(@Param('employee_id') employeeId: string): BalancesResponse {
+  async getBalances(
+    @Param('employee_id') employeeId: string,
+    @Query() query: AdjustQueryDto,
+    @Res() res: Response,
+  ): Promise<void> {
+    // Location-agnostic: get-balance is per-employee, so the scenario scope omits location.
+    const scenario = this.scenarios.resolve('get_balance', employeeId, '');
+
+    if (scenario === 'slow') {
+      await delay(query.latency_ms ?? DEFAULT_SLOW_LATENCY_MS);
+    }
+
+    if (scenario === 'network-failure') {
+      res.socket?.destroy();
+      return;
+    }
+
+    if (scenario === 'down') {
+      throw new ServiceUnavailableException('HCM is down (mock scenario)');
+    }
+
+    if (
+      scenario === 'flaky' &&
+      this.scenarios.shouldFlakyFail('get_balance', query.fail_rate ?? DEFAULT_FAIL_RATE)
+    ) {
+      throw new ServiceUnavailableException('HCM flaky failure (mock scenario)');
+    }
+
     const rows = this.storage.findByEmployee(employeeId);
     if (rows.length === 0) {
       throw new NotFoundException(`Unknown employee ${employeeId}`);
     }
-    return {
+    const response: BalancesResponse = {
       employee_id: employeeId,
       balances: rows.map((row) => ({
         location_id: row.location_id,
@@ -145,6 +182,7 @@ export class BalancesController {
         last_modified_at: row.last_modified_at,
       })),
     };
+    res.status(HttpStatus.OK).json(response);
   }
 
   /**
