@@ -8,20 +8,25 @@ import { ApprovalSagaService } from './sagas/approval-saga.service';
 import { ApprovalRetryService } from './sagas/approval-retry.service';
 import { CancellationSagaService } from './sagas/cancellation-saga.service';
 import { CancellationRetryService } from './sagas/cancellation-retry.service';
+import { StuckStateSweepScheduler } from './stuck-state-sweep.scheduler';
+import { StuckStateSweepService } from './stuck-state-sweep.service';
 import { TimeOffController } from './time-off.controller';
 
 /**
- * Request lifecycle: submission (T-01), the approval saga (T-02/03/04),
- * cancellation saga (T-09/10/11), and admin retry endpoints (T-05, T-12).
+ * Request lifecycle: submission (T-01), approval saga (T-02/03/04), cancellation
+ * saga (T-09/10/11), admin retry endpoints (T-05, T-12), and stuck-state sweep
+ * (Cycle 06, REQ-DEF-11, F-07).
+ *
  * Imports {@link BalancesModule} for the shared {@link BalanceRepository} and
- * {@link HcmSyncModule} for the HCM adjuster; audit/auth are global.
+ * {@link HcmSyncModule} for the HCM adjuster. Auth/audit are global.
  *
  * Imports {@link ReconciliationModule} (via `forwardRef`, as it imports this
  * module back for {@link RequestRepository}) so the approval saga and retry
  * services can inject the point-reconciliation queue and
  * {@link DriftDetectionService}: F-04/F-05 enqueue a point recon and a
  * successful commit schedules the post-commit drift check
- * (REQ-SYNC-04/04a/08, ADR-011).
+ * (REQ-SYNC-04/04a/08, ADR-011). {@link SchedulerRegistry} is available because
+ * {@link ReconciliationModule} already imports {@link ScheduleModule.forRoot}.
  */
 @Module({
   imports: [BalancesModule, HcmSyncModule, forwardRef(() => ReconciliationModule)],
@@ -33,6 +38,8 @@ import { TimeOffController } from './time-off.controller';
     ApprovalRetryService,
     CancellationSagaService,
     CancellationRetryService,
+    StuckStateSweepService,
+    StuckStateSweepScheduler,
   ],
   exports: [RequestRepository],
 })

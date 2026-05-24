@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, In, type EntityManager } from 'typeorm';
+import { DataSource, In, LessThan, type EntityManager } from 'typeorm';
 import { InvalidTransitionError } from '../../common/errors/invalid-transition.error';
 import { TimeOffRequest } from '../../database/entities';
 import type { RequestStatus } from './request-state-machine';
@@ -70,6 +70,25 @@ export class RequestRepository {
     if (!result.affected) {
       throw new InvalidTransitionError(id);
     }
+  }
+
+  /**
+   * Returns requests stuck in a transient saga state (APPROVING or CANCELLING)
+   * whose `updated_at` predates `cutoff` (i.e. older than `thresholdMs`).
+   * Ordered oldest-first so chronically-failing rows don't starve newer ones
+   * (REQ-DEF-11, F-07, TRD §11.1).
+   * @param thresholdMs age in milliseconds; rows with `updatedAt < (now - thresholdMs)` are returned
+   * @returns stuck requests, oldest first
+   */
+  async findStuckRequests(thresholdMs: number): Promise<TimeOffRequest[]> {
+    const cutoff = new Date(Date.now() - thresholdMs);
+    return this.dataSource.manager.getRepository(TimeOffRequest).find({
+      where: [
+        { status: 'APPROVING', updatedAt: LessThan(cutoff) },
+        { status: 'CANCELLING', updatedAt: LessThan(cutoff) },
+      ],
+      order: { updatedAt: 'ASC' },
+    });
   }
 
   /**

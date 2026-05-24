@@ -68,6 +68,14 @@ export async function bootstrapE2E(options: BootstrapOptions = {}): Promise<E2EC
   }
   if (options.hcmAdjuster) {
     builder = builder.overrideProvider(HCM_ADJUSTER).useValue(options.hcmAdjuster);
+    // When a raw adjuster is supplied, also point the HcmClient DI provider at the
+    // same base URL (if the adjuster IS an HcmClient) so the stuck-state sweep,
+    // which injects HcmClient directly, hits the same mock. We derive the URL from
+    // the adjuster instance only when it is an HcmClient; otherwise callers that
+    // need the sweep override should use `hcmBaseUrl` instead.
+    if (options.hcmAdjuster instanceof HcmClient) {
+      builder = builder.overrideProvider(HcmClient).useValue(options.hcmAdjuster);
+    }
   } else if (options.hcmBaseUrl) {
     const baseUrl = options.hcmBaseUrl;
     builder = builder.overrideProvider(HCM_ADJUSTER).useFactory({
@@ -80,6 +88,13 @@ export async function bootstrapE2E(options: BootstrapOptions = {}): Promise<E2EC
         };
         return new ResilientHcmAdjuster(client, breaker, policy, () => 0.5, async () => {}, logger);
       },
+    });
+    // Point the raw HcmClient DI provider at the same mock so the stuck-state
+    // sweep (which injects HcmClient directly) uses the correct base URL.
+    builder = builder.overrideProvider(HcmClient).useFactory({
+      inject: [ConfigService],
+      factory: (config: ConfigService) =>
+        new HcmClient(baseUrl, config.getOrThrow<number>('HCM_TIMEOUT_MS')),
     });
     // Point the READ side at the same in-test mock so reconciliation and the
     // post-commit drift check (REQ-SYNC-04a) hit the same HCM the saga adjusts.
