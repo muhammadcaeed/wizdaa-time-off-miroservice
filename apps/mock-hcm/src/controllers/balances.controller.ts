@@ -1,20 +1,30 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   Body,
   ConflictException,
   Controller,
   Get,
   Headers,
-  HttpCode,
   HttpStatus,
   NotFoundException,
   Param,
   Post,
+  Query,
+  Res,
+  ServiceUnavailableException,
 } from '@nestjs/common';
-import { AdjustRequestDto } from '../dto/adjust.dto';
+import type { Response } from 'express';
+import { AdjustQueryDto, AdjustRequestDto } from '../dto/adjust.dto';
 import { IdempotencyService } from '../services/idempotency.service';
-import { ScenarioService } from '../services/scenario.service';
+import { type ScenarioName, ScenarioService } from '../services/scenario.service';
 import { StorageService } from '../services/storage.service';
+
+/** Default latency injected by the `slow` scenario (mock-hcm.md §4). */
+const DEFAULT_SLOW_LATENCY_MS = 2000;
+
+/** Default failure fraction for the `flaky` scenario (mock-hcm.md §4). */
+const DEFAULT_FAIL_RATE = 0.3;
 
 /** Adjust response shape (mock-hcm.md §2.2, TRD §9.1). */
 interface AdjustResponse {
@@ -66,17 +76,71 @@ export class BalancesController {
 
   /**
    * Applies a balance adjustment, idempotent under the Idempotency-Key header.
+   *
+   * Chaos scenarios (mock-hcm.md §4) are applied before the business logic:
+   * `slow` delays, `down` always 503s, `flaky` 5xxs deterministically, and
+   * `network-failure` destroys the socket so the client sees a transport error
+   * rather than a clean HTTP response. The `@Res` handle is required for the
+   * socket-destroy path; success and thrown exceptions still flow through it.
+   *
+   * @param idempotencyKey the Idempotency-Key header value
+   * @param query per-request chaos knobs (`latency_ms`, `fail_rate`)
+   * @param body the adjust request
+   * @param res the raw express response (for socket destroy + serialization)
+   * @returns nothing; the response is written via `res`
+   * @throws ConflictException on a duplicate key with a different body
+   * @throws NotFoundException if the (employee, location) pair is unknown
+   * @throws ServiceUnavailableException under the `down`/`flaky` scenarios
+   */
+  @Post('adjust')
+  async adjust(
+    @Headers('idempotency-key') idempotencyKey: string,
+    @Query() query: AdjustQueryDto,
+    @Body() body: AdjustRequestDto,
+    @Res() res: Response,
+  ): Promise<void> {
+    const scenario = this.scenarios.resolve('adjust', body.employee_id, body.location_id);
+
+    if (scenario === 'slow') {
+      await delay(query.latency_ms ?? DEFAULT_SLOW_LATENCY_MS);
+    }
+
+    if (scenario === 'network-failure') {
+      // Destroy the socket mid-response so the client observes an
+      // ECONNRESET-style transport error, not a clean 5xx (mock-hcm.md §4).
+      res.socket?.destroy();
+      return;
+    }
+
+    if (scenario === 'down') {
+      throw new ServiceUnavailableException('HCM is down (mock scenario)');
+    }
+
+    if (
+      scenario === 'flaky' &&
+      this.scenarios.shouldFlakyFail('adjust', query.fail_rate ?? DEFAULT_FAIL_RATE)
+    ) {
+      throw new ServiceUnavailableException('HCM flaky failure (mock scenario)');
+    }
+
+    const response = this.applyAdjust(idempotencyKey, body, scenario);
+    res.status(HttpStatus.OK).json(response);
+  }
+
+  /**
+   * Runs the idempotent balance-adjust business logic, separated so the chaos
+   * branches in {@link adjust} stay readable.
    * @param idempotencyKey the Idempotency-Key header value
    * @param body the adjust request
-   * @returns 200 with the new total and a fresh correlation id
+   * @param scenario the resolved scenario (`normal` or a success variant)
+   * @returns the adjust response (a fresh result or an idempotent replay)
    * @throws ConflictException on a duplicate key with a different body
    * @throws NotFoundException if the (employee, location) pair is unknown
    */
-  @Post('adjust')
-  @HttpCode(HttpStatus.OK)
-  adjust(
-    @Headers('idempotency-key') idempotencyKey: string,
-    @Body() body: AdjustRequestDto,
+  private applyAdjust(
+    idempotencyKey: string,
+    body: AdjustRequestDto,
+    scenario: ScenarioName,
   ): AdjustResponse {
     if (idempotencyKey !== undefined) {
       const cached = this.idempotency.lookup(idempotencyKey, body);
@@ -93,7 +157,6 @@ export class BalancesController {
       throw new NotFoundException(`Unknown balance for ${body.employee_id}:${body.location_id}`);
     }
 
-    const scenario = this.scenarios.resolve('adjust', body.employee_id, body.location_id);
     const preTotal = row.total_days;
     let newTotal: number;
     switch (scenario) {
@@ -105,7 +168,6 @@ export class BalancesController {
         // 2xx reporting a total that disagrees with pre + delta; storage unchanged.
         newTotal = preTotal + body.delta + 1;
         break;
-      case 'normal':
       default:
         newTotal = this.storage.applyDelta(body.employee_id, body.location_id, body.delta);
         break;

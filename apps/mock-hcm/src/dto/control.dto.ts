@@ -9,7 +9,15 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-const SCENARIOS = ['normal', 'ambiguous-success', 'unverifiable-success'] as const;
+const SCENARIOS = [
+  'normal',
+  'ambiguous-success',
+  'unverifiable-success',
+  'slow',
+  'flaky',
+  'down',
+  'network-failure',
+] as const;
 type ScenarioName = (typeof SCENARIOS)[number];
 
 /** Inject/overwrite a stored balance (mock-hcm.md §3.2). */
