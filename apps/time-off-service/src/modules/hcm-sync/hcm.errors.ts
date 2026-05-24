@@ -38,6 +38,8 @@ export class HcmArithmeticMismatchError extends HcmError {
     message: string,
     readonly expected?: number,
     readonly actual?: number,
+    /** HCM-issued correlation id; defined when HCM returned a valid id but the arithmetic was wrong (case-2 replay). */
+    readonly hcmCorrelationId?: string,
   ) {
     super(message);
   }

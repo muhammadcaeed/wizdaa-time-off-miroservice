@@ -10,6 +10,7 @@ import { BalanceRepository } from '../balances/balance.repository';
 import type { Principal } from '../auth/principal';
 import { RequestRepository } from './request.repository';
 import { RequestService } from './request.service';
+import type { CancellationSagaService } from './sagas/cancellation-saga.service';
 import type { SubmitRequestDto } from './dto/submit-request.dto';
 
 /**
@@ -38,6 +39,9 @@ describe('RequestService.submit (T-01 reservation)', () => {
       new RequestRepository(dataSource),
       new AuditService(new AuditRepository()),
       new AuthorizationService(new EmployeeRepository(dataSource)),
+      // submit never routes to the cancellation saga; a never-called stub keeps
+      // this spec focused on T-01.
+      undefined as unknown as CancellationSagaService,
     );
     await dataSource.getRepository(Balance).insert({
       id: 'bal_001',

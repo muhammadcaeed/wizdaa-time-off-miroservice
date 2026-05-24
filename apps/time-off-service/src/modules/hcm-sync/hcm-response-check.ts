@@ -38,6 +38,7 @@ export function verifyAdjustResponse(
       `HCM new_total_days ${newTotalDays} disagrees with expected ${expected} (pre ${preTotal}, delta ${delta})`,
       expected,
       newTotalDays,
+      correlationId,
     );
   }
 

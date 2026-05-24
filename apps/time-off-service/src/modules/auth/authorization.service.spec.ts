@@ -98,4 +98,22 @@ describe('AuthorizationService (RBAC, 403 hides existence)', () => {
       await expect(authz.assertCanApprove(admin, 'emp_002')).resolves.toBeUndefined();
     });
   });
+
+  describe('cancellation (owner or admin only — managers excluded)', () => {
+    it('allows the owner to cancel their own request', () => {
+      expect(() => authz.assertCanCancel(employee, 'emp_001')).not.toThrow();
+    });
+
+    it('allows an admin to cancel anyone’s request', () => {
+      expect(() => authz.assertCanCancel(admin, 'emp_002')).not.toThrow();
+    });
+
+    it('forbids a manager cancelling a direct report — managers do not get cancel', () => {
+      expect(() => authz.assertCanCancel(manager, 'emp_001')).toThrow(ForbiddenError);
+    });
+
+    it('forbids a stranger cancelling someone else’s request', () => {
+      expect(() => authz.assertCanCancel(employee, 'emp_002')).toThrow(ForbiddenError);
+    });
+  });
 });

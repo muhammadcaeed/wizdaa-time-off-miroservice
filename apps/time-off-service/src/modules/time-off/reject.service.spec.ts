@@ -10,6 +10,7 @@ import type { Principal } from '../auth/principal';
 import { BalanceRepository } from '../balances/balance.repository';
 import { RequestRepository } from './request.repository';
 import { RequestService } from './request.service';
+import type { CancellationSagaService } from './sagas/cancellation-saga.service';
 
 /**
  * @req REQ-LIFE-07
@@ -29,6 +30,8 @@ describe('RequestService.reject (T-07)', () => {
       new RequestRepository(dataSource),
       new AuditService(new AuditRepository()),
       new AuthorizationService(new EmployeeRepository(dataSource)),
+      // reject never routes to the cancellation saga; a never-called stub.
+      undefined as unknown as CancellationSagaService,
     );
     await dataSource.getRepository(Employee).insert({
       id: 'emp_001',
