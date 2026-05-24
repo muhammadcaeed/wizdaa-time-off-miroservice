@@ -10,7 +10,11 @@ export interface BalanceRow {
   last_modified_at: string;
 }
 
-const DEFAULT_FIXTURE_PATH = resolve(__dirname, '../../fixtures/balances.json');
+// Anchored at the repo root (cwd for every npm/vitest invocation) rather than
+// __dirname: the compiled `nest start mock-hcm` runs from dist/, where the
+// source's `src/` segment is gone, so a __dirname-relative path overshoots to
+// dist/apps/fixtures and ENOENTs. The source tree path is stable from cwd.
+const DEFAULT_FIXTURE_PATH = resolve(process.cwd(), 'apps/mock-hcm/fixtures/balances.json');
 
 /**
  * In-memory balance store seeded from a JSON fixture (mock-hcm.md §5).
