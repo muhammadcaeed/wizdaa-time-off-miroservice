@@ -1,10 +1,14 @@
 import { forwardRef, Module } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
 import { BalancesModule } from '../balances/balances.module';
 import { HcmSyncModule } from '../hcm-sync/hcm-sync.module';
 import { TimeOffModule } from '../time-off/time-off.module';
+import { DriftDetectionService } from './drift-detection.service';
 import { NextTickPointReconciliationQueue } from './next-tick-point-reconciliation-queue';
 import { POINT_RECONCILER, POINT_RECONCILIATION_QUEUE } from './point-reconciliation-queue';
+import { ReconciliationController } from './reconciliation.controller';
 import { ReconciliationRepository } from './reconciliation.repository';
+import { ReconciliationScheduler } from './reconciliation.scheduler';
 import { ReconciliationService } from './reconciliation.service';
 
 /**
@@ -19,16 +23,33 @@ import { ReconciliationService } from './reconciliation.service';
  *
  * {@link ReconciliationService} is bound to {@link POINT_RECONCILER} via
  * `useExisting` so the queue and the service are the same singleton.
+ * {@link ScheduleModule.forRoot} provides the {@link SchedulerRegistry} the
+ * {@link ReconciliationScheduler} registers the periodic run with.
+ * {@link DriftDetectionService} is exported so the approval saga (in
+ * {@link TimeOffModule}) can schedule the post-commit drift check (REQ-SYNC-04a).
  */
 @Module({
-  imports: [BalancesModule, HcmSyncModule, forwardRef(() => TimeOffModule)],
+  imports: [
+    ScheduleModule.forRoot(),
+    BalancesModule,
+    HcmSyncModule,
+    forwardRef(() => TimeOffModule),
+  ],
+  controllers: [ReconciliationController],
   providers: [
     ReconciliationService,
     ReconciliationRepository,
+    ReconciliationScheduler,
+    DriftDetectionService,
     NextTickPointReconciliationQueue,
     { provide: POINT_RECONCILER, useExisting: ReconciliationService },
     { provide: POINT_RECONCILIATION_QUEUE, useClass: NextTickPointReconciliationQueue },
   ],
-  exports: [POINT_RECONCILIATION_QUEUE, ReconciliationService, ReconciliationRepository],
+  exports: [
+    POINT_RECONCILIATION_QUEUE,
+    DriftDetectionService,
+    ReconciliationService,
+    ReconciliationRepository,
+  ],
 })
 export class ReconciliationModule {}
