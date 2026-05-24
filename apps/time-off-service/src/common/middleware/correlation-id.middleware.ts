@@ -1,5 +1,6 @@
 import { Injectable, type NestMiddleware } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
+import { correlationStore } from '../context/correlation.context';
 
 /**
  * Echoes the correlation ID — assigned by pino-http's `genReqId` — back to the
@@ -32,6 +33,8 @@ export class CorrelationIdMiddleware implements NestMiddleware {
     // req.id is set by pino-http before this middleware runs (see ordering note above)
     const id = (req as unknown as { id?: string }).id ?? '';
     res.setHeader('x-correlation-id', id);
-    next();
+    // Run the rest of the request chain inside the correlation store so
+    // downstream code (HCM client) can read the ID without an HTTP reference.
+    correlationStore.run({ correlationId: id }, () => next());
   }
 }

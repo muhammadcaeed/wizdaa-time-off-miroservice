@@ -8,7 +8,7 @@ import { DomainError } from './domain-error';
 // ---------------------------------------------------------------------------
 class TestDomainError extends DomainError {
   readonly httpStatus = 409;
-  readonly typeUri = 'https://api.wizdaa.dev/errors/test-error';
+  readonly typeUri = '/errors/test-error';
 
   constructor(message = 'test domain error') {
     super(message);
@@ -88,7 +88,7 @@ describe('DomainExceptionFilter', () => {
 
       expect(statusFn).toHaveBeenCalledWith(409);
       const body = json.mock.calls[0][0] as Record<string, unknown>;
-      expect(body.type).toBe('https://api.wizdaa.dev/errors/test-error');
+      expect(body.type).toBe('/errors/test-error');
       expect(body.title).toBe('TestDomainError');
       expect(body.status).toBe(409);
       expect(body.detail).toBe('domain failure');
@@ -145,7 +145,7 @@ describe('DomainExceptionFilter', () => {
 
       expect(statusFn).toHaveBeenCalledWith(400);
       const body = json.mock.calls[0][0] as Record<string, unknown>;
-      expect(body.type).toBe('https://api.wizdaa.dev/errors/validation-error');
+      expect(body.type).toBe('/errors/validation-error');
       expect(body.title).toBe('ValidationError');
       expect(body.status).toBe(400);
       expect(body.detail).toBe('Request validation failed.');
@@ -167,7 +167,7 @@ describe('DomainExceptionFilter', () => {
       filter.catch(ex, host);
 
       const body = json.mock.calls[0][0] as Record<string, unknown>;
-      expect(body.type).toBe('https://api.wizdaa.dev/errors/validation-error');
+      expect(body.type).toBe('/errors/validation-error');
       const errors = body.errors as Array<{ field: string; message: string }>;
       expect(errors).toHaveLength(1);
       // First word becomes the field; remainder is the message text.
@@ -198,7 +198,7 @@ describe('DomainExceptionFilter', () => {
 
       expect(statusFn).toHaveBeenCalledWith(429);
       const body = json.mock.calls[0][0] as Record<string, unknown>;
-      expect(body.type).toBe('https://api.wizdaa.dev/errors/rate-limited');
+      expect(body.type).toBe('/errors/rate-limited');
       expect(body.title).toBe('TooManyRequests');
       expect(body.status).toBe(429);
       expect(body.detail).toBe('Rate limit exceeded. Please retry after a moment.');
@@ -215,7 +215,7 @@ describe('DomainExceptionFilter', () => {
 
       expect(statusFn).toHaveBeenCalledWith(404);
       const body = json.mock.calls[0][0] as Record<string, unknown>;
-      expect(body.type).toBe('https://api.wizdaa.dev/errors/http-error');
+      expect(body.type).toBe('/errors/http-error');
       expect(body.status).toBe(404);
       expect(typeof body.detail).toBe('string');
       expect(body.instance).toBe('/requests/99');

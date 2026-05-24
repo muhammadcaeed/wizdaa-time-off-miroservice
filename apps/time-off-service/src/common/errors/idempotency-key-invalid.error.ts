@@ -6,7 +6,7 @@ import { DomainError } from './domain-error';
  */
 export class IdempotencyKeyInvalidError extends DomainError {
   readonly httpStatus = 400;
-  readonly typeUri = 'https://api.wizdaa.dev/errors/idempotency-key-invalid';
+  readonly typeUri = '/errors/idempotency-key-invalid';
 
   constructor() {
     super('Idempotency-Key must be a valid UUID.');

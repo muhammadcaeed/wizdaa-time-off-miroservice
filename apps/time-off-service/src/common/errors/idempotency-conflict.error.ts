@@ -6,7 +6,7 @@ import { DomainError } from './domain-error';
  */
 export class IdempotencyConflictError extends DomainError {
   readonly httpStatus = 422;
-  readonly typeUri = 'https://api.wizdaa.dev/errors/idempotency-conflict';
+  readonly typeUri = '/errors/idempotency-conflict';
 
   constructor() {
     super('Idempotency-Key reused with different request payload.');

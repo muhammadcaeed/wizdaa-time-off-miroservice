@@ -7,7 +7,7 @@ import { DomainError } from './domain-error';
  */
 export class IdempotencyKeyMissingError extends DomainError {
   readonly httpStatus = 400;
-  readonly typeUri = 'https://api.wizdaa.dev/errors/idempotency-key-missing';
+  readonly typeUri = '/errors/idempotency-key-missing';
 
   constructor() {
     super('Idempotency-Key header is required on all POST endpoints.');

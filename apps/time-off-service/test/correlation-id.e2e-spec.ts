@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { bootstrapE2E, type E2EContext } from '../../../test/support/e2e';
 import { bearer } from '../../../test/support/auth';
@@ -50,6 +51,7 @@ describe('X-Correlation-ID propagation (e2e)', () => {
     const res = await request(ctx.httpServer)
       .post('/api/v1/requests')
       .set('Authorization', bearer('emp_corr', ['EMPLOYEE']))
+      .set('Idempotency-Key', randomUUID())
       .send({
         location_id: 'loc_corr',
         start_date: '2027-01-10',
@@ -68,6 +70,7 @@ describe('X-Correlation-ID propagation (e2e)', () => {
       .post('/api/v1/requests')
       .set('Authorization', bearer('emp_corr', ['EMPLOYEE']))
       .set('X-Correlation-ID', correlationId)
+      .set('Idempotency-Key', randomUUID())
       .send({
         location_id: 'loc_corr',
         start_date: '2027-02-01',

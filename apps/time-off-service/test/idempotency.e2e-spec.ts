@@ -5,7 +5,7 @@ import request from 'supertest';
 import { bearer } from '../../../test/support/auth';
 import { bootstrapE2E, type E2EContext } from '../../../test/support/e2e';
 import { MockHcmModule } from '../../mock-hcm/src/mock-hcm.module';
-import { Balance, Employee, IdempotencyRecord, Location } from '../src/database/entities';
+import { AuditLog, Balance, Employee, IdempotencyRecord, Location } from '../src/database/entities';
 import { HcmClient } from '../src/modules/hcm-sync/hcm-client';
 import type { RequestResponse } from '../src/modules/time-off/dto/request-response.dto';
 
@@ -155,6 +155,19 @@ describe('Idempotency (e2e)', () => {
         .getRepository(IdempotencyRecord)
         .findBy({ key: idempotencyKey });
       expect(recordsAfter).toHaveLength(1);
+
+      // Side effects happened exactly once: single audit row for this request.
+      const auditRows = await ctx.dataSource
+        .getRepository(AuditLog)
+        .findBy({ entityId: firstBody.id });
+      expect(auditRows).toHaveLength(1);
+      expect(auditRows[0].action).toBe('request.submitted');
+
+      // Balance was reserved exactly once (days_requested = 3, not doubled to 6).
+      const balance = await ctx.dataSource
+        .getRepository(Balance)
+        .findOneByOrFail({ employeeId: 'emp_idem_1', locationId: 'loc_idem' });
+      expect(balance.reservedDays).toBe(body.days_requested);
     });
 
     it('returns 422 conflict when same key is used with different body', async () => {
@@ -177,7 +190,7 @@ describe('Idempotency (e2e)', () => {
         .expect(422);
 
       expect(conflictRes.body).toMatchObject({
-        type: 'https://api.wizdaa.dev/errors/idempotency-conflict',
+        type: '/errors/idempotency-conflict',
         status: 422,
       });
     });
@@ -190,7 +203,7 @@ describe('Idempotency (e2e)', () => {
         .expect(400);
 
       expect(res.body).toMatchObject({
-        type: 'https://api.wizdaa.dev/errors/idempotency-key-missing',
+        type: '/errors/idempotency-key-missing',
         status: 400,
       });
     });

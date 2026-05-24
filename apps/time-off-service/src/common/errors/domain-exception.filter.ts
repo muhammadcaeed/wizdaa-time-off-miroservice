@@ -11,9 +11,9 @@ import { DomainError } from './domain-error';
 // ---------------------------------------------------------------------------
 // Stable type URIs (REQ-ERR-04, REQ-ERR-05)
 // ---------------------------------------------------------------------------
-const VALIDATION_ERROR_TYPE = 'https://api.wizdaa.dev/errors/validation-error';
-const RATE_LIMIT_TYPE = 'https://api.wizdaa.dev/errors/rate-limited';
-const HTTP_ERROR_TYPE = 'https://api.wizdaa.dev/errors/http-error';
+const VALIDATION_ERROR_TYPE = '/errors/validation-error';
+const RATE_LIMIT_TYPE = '/errors/rate-limited';
+const HTTP_ERROR_TYPE = '/errors/http-error';
 
 /**
  * Represents a single field-level validation failure emitted in the `errors[]`

@@ -99,12 +99,13 @@ describe('POST /api/v1/requests (e2e)', () => {
     const res = await request(ctx.httpServer)
       .post('/api/v1/requests')
       .set('Authorization', bearer('emp_001', ['EMPLOYEE']))
+      .set('Idempotency-Key', randomUUID())
       .send({ ...submit('emp_001', 0) }) // days_requested: 0 violates @Min(1)
       .expect(400);
 
     const body = res.body as ProblemDetails;
     expect(res.headers['content-type']).toMatch(/application\/problem\+json/);
-    expect(body.type).toBe('https://api.wizdaa.dev/errors/validation-error');
+    expect(body.type).toBe('/errors/validation-error');
     expect(body.title).toBe('ValidationError');
     expect(body.status).toBe(400);
     expect(body.detail).toBe('Request validation failed.');

@@ -1,3 +1,4 @@
+import { getCorrelationId } from '../../common/context/correlation.context';
 import type { HcmAdjuster } from './hcm-adjuster';
 import { verifyAdjustResponse, type VerifiedAdjust } from './hcm-response-check';
 import {
@@ -77,7 +78,11 @@ export class HcmClient implements HcmAdjuster {
     try {
       return await fetch(`${this.baseUrl}/hcm/balances/adjust`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        headers: {
+          'content-type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          ...(getCorrelationId() ? { 'x-correlation-id': getCorrelationId() as string } : {}),
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });

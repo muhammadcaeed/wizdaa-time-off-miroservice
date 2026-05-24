@@ -2,10 +2,12 @@ import type { Server } from 'node:http';
 import { ValidationPipe, type INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
+import { getOptionsToken } from '@nestjs/throttler';
 import { getLoggerToken, type PinoLogger } from 'nestjs-pino';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../../apps/time-off-service/src/app.module';
 import { InitSchema1779625818136 } from '../../apps/time-off-service/src/database/migrations/1779625818136-InitSchema';
+import { AddRequestListIndexes1779660850392 } from '../../apps/time-off-service/src/database/migrations/1779660850392-AddRequestListIndexes';
 import { CircuitBreaker } from '../../apps/time-off-service/src/modules/hcm-sync/circuit-breaker';
 import { HCM_ADJUSTER, type HcmAdjuster } from '../../apps/time-off-service/src/modules/hcm-sync/hcm-adjuster';
 import { HCM_READER } from '../../apps/time-off-service/src/modules/hcm-sync/hcm-reader';
@@ -30,6 +32,15 @@ export interface BootstrapOptions {
    * without relying on env-load ordering. Other breaker thresholds stay env-driven.
    */
   breakerCooldownMs?: number;
+  /**
+   * Override the per-IP throttle limit for this test instance. Replaces the entire
+   * ThrottlerModule so the limit is guaranteed regardless of env-load ordering.
+   */
+  throttleIpLimit?: number;
+  /**
+   * Override the per-sub throttle limit for this test instance.
+   */
+  throttleSubLimit?: number;
 }
 
 export interface E2EContext {
@@ -64,6 +75,14 @@ export async function bootstrapE2E(options: BootstrapOptions = {}): Promise<E2EC
           Date.now,
           logger,
         ),
+    });
+  }
+  if (options.throttleIpLimit !== undefined || options.throttleSubLimit !== undefined) {
+    builder = builder.overrideProvider(getOptionsToken()).useValue({
+      throttlers: [
+        { name: 'ip', ttl: 60_000, limit: options.throttleIpLimit ?? 10 },
+        { name: 'sub', ttl: 60_000, limit: options.throttleSubLimit ?? 30 },
+      ],
     });
   }
   if (options.hcmAdjuster) {
@@ -116,6 +135,7 @@ export async function bootstrapE2E(options: BootstrapOptions = {}): Promise<E2EC
   const queryRunner = dataSource.createQueryRunner();
   try {
     await new InitSchema1779625818136().up(queryRunner);
+    await new AddRequestListIndexes1779660850392().up(queryRunner);
   } finally {
     await queryRunner.release();
   }
