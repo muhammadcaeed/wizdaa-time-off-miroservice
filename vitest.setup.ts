@@ -7,3 +7,4 @@ process.env.NODE_ENV ??= 'test';
 process.env.DATABASE_FILE ??= ':memory:';
 process.env.JWT_SIGNING_KEY ??= 'test-signing-key';
 process.env.HCM_BASE_URL ??= 'http://localhost:4001';
+process.env.LOG_LEVEL ??= 'silent';
