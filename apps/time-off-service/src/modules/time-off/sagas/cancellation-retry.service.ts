@@ -4,12 +4,12 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, type EntityManager } from 'typeorm';
 import { AuditService } from '../../../common/audit/audit.service';
 import { BalanceNotFoundError } from '../../../common/errors/balance-not-found.error';
+import { InvalidTransitionError } from '../../../common/errors/invalid-transition.error';
 import { RequestNotFoundError } from '../../../common/errors/request-not-found.error';
+import { HcmUnavailableError } from '../../../common/errors/hcm-unavailable.error';
 import { OccConflictError } from '../../../common/persistence/occ-conflict.error';
 import { withOccRetry } from '../../../common/persistence/with-occ-retry';
 import { actorTypeOf, type Principal } from '../../auth/principal';
-import { HcmUnavailableError } from '../../../common/errors/hcm-unavailable.error';
-import { CircuitBreaker } from '../../hcm-sync/circuit-breaker';
 import { HCM_ADJUSTER, type HcmAdjuster } from '../../hcm-sync/hcm-adjuster';
 import {
   HcmArithmeticMismatchError,
@@ -18,6 +18,7 @@ import {
   HcmInsufficientBalanceError,
   HcmTransportError,
 } from '../../hcm-sync/hcm.errors';
+import { CircuitBreaker } from '../../hcm-sync/circuit-breaker';
 import { BalanceRepository } from '../../balances/balance.repository';
 import { DriftDetectionService } from '../../reconciliation/drift-detection.service';
 import {
@@ -28,25 +29,30 @@ import { RequestRepository } from '../request.repository';
 import { toRequestResponse, type RequestResponse } from '../dto/request-response.dto';
 
 /**
- * Reverse cancellation saga (TRD §3.2 Flow C, §5.2 T-09/10/11). The exact mirror
- * of {@link ApprovalSagaService}: an HCM INCREMENT that restores the days an
- * APPROVED request consumed, run as three phases with the HCM call outside any DB
- * transaction (holding a SQLite write tx across HTTP would block all writers):
+ * Admin retry for a stuck CANCELLATION_FAILED request (T-12, TRD §5.2, REQ-LIFE-12).
  *
- * 1. T-09 — status APPROVED→CANCELLING (status CAS) + capture pre-total + audit.
- * 2. HCM increment (key `<id>:increment`), then the expected-total arithmetic check.
- * 3. T-10 — on success: balance total += days (version CAS, reserved UNCHANGED) +
- *    status→CANCELLED + audit. T-11 on any HCM failure: status→CANCELLATION_FAILED
- *    + audit WITHOUT touching the balance — CANCELLING holds no reservation, so a
- *    `casRelease` here would corrupt the balance (ADR-012, guarded by a failing test).
+ * Simpler than {@link ApprovalRetryService}: CANCELLING holds no reservation
+ * (APPROVED had already cleared reserved at T-03, per ADR-012), so there is no
+ * balance availability check and no re-reservation step.
  *
- * The router ({@link RequestService.cancel}) has already gated state, future-date,
- * and authorization; this saga assumes an APPROVED future-dated request. If the
- * post-HCM commit loses the version race past the retry budget, the request is left
- * CANCELLING for the stuck-state sweep (Plan 06) — never force-committed (R-04).
+ * Structure mirrors {@link CancellationSagaService}: three phases with the HCM
+ * call outside any DB transaction:
+ *
+ * 1. T_retry_1 — CANCELLATION_FAILED→CANCELLING (status CAS) + capture pre-total
+ *    + audit with `metadata: { retry: true }`.
+ * 2. HCM increment with the SAME idempotency key (`<id>:increment`) — HCM returns
+ *    the cached result for a replayed key.
+ * 3. T_retry_2 — on success: casCommit(total += days, reserved unchanged) +
+ *    CANCELLING→CANCELLED + audit. On HCM failure: fail() — CANCELLING→
+ *    CANCELLATION_FAILED + audit. NOTE: fail() does NOT call casRelease —
+ *    CANCELLING holds no reservation, so a release would corrupt the balance
+ *    (ADR-012, same guard as the primary cancellation saga).
+ *
+ * R-04 fix: inside commit(), compare the fresh balance total to
+ * `preTotal + days`; if already applied by reconciliation, skip the total delta.
  */
 @Injectable()
-export class CancellationSagaService {
+export class CancellationRetryService {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly balanceRepository: BalanceRepository,
@@ -55,40 +61,42 @@ export class CancellationSagaService {
     @Inject(HCM_ADJUSTER) private readonly hcm: HcmAdjuster,
     private readonly breaker: CircuitBreaker,
     @Inject(POINT_RECONCILIATION_QUEUE) private readonly pointQueue: PointReconciliationQueue,
-    // forwardRef: TimeOffModule <-> ReconciliationModule are mutually importing.
     @Inject(forwardRef(() => DriftDetectionService))
     private readonly driftDetection: DriftDetectionService,
   ) {}
 
   /**
-   * Runs the reverse saga for an APPROVED future-dated request (the router has
-   * already verified state, future-date, and authorization).
-   * @returns the request in its terminal saga state (CANCELLED or
-   *   CANCELLATION_FAILED), or CANCELLING if the commit was deferred to the sweep
-   * @throws HcmUnavailableError (503) when the breaker is OPEN at entry — the
-   *   request stays APPROVED, never entering CANCELLING (REQ-SYNC-06, REQ-DEF-07)
+   * Retries a stuck CANCELLATION_FAILED request as an admin (T-12).
+   * @returns the request in its resulting state (CANCELLED, CANCELLATION_FAILED,
+   *   or CANCELLING if the commit was deferred to the sweep)
+   * @throws RequestNotFoundError (404) when the request does not exist
+   * @throws InvalidTransitionError (409) when the request is not CANCELLATION_FAILED
+   * @throws HcmUnavailableError (503) when the breaker is OPEN at entry
+   * @req REQ-LIFE-12
    */
-  async execute(requestId: string, actor: Principal): Promise<RequestResponse> {
+  async retry(requestId: string, actor: Principal): Promise<RequestResponse> {
     const correlationId = randomUUID();
     const request = await this.requestRepository.findById(requestId);
     if (!request) {
-      // Defensive only: the router pre-loaded and authorized this request before
-      // delegating, so a null here means it vanished between calls (or a misuse).
       throw new RequestNotFoundError();
     }
+    if (request.status !== 'CANCELLATION_FAILED') {
+      throw new InvalidTransitionError(requestId);
+    }
 
-    // Pre-gate: fast-fail 503 BEFORE the APPROVED→CANCELLING transition.
-    // CANCELLING→APPROVED is not a legal back-transition (§5.1), so entering
-    // CANCELLING first would wedge the request; gating here keeps it
-    // non-transient (REQ-DEF-07) while fast-failing per REQ-SYNC-06.
+    // Pre-gate: fast-fail 503 BEFORE re-entering CANCELLING. CANCELLING→
+    // CANCELLATION_FAILED is the failure path; gating here prevents a
+    // redundant failure cycle when HCM is known-down (REQ-DEF-07).
     if (this.breaker.isHardOpen()) {
-      await this.recordBreakerFastFail(request.id, actor, correlationId);
+      await this.recordBreakerFastFail(requestId, actor, correlationId);
       throw new HcmUnavailableError();
     }
 
     const days = request.daysRequested;
     const delta = +days; // INCREMENT: restore the consumed days
-    const preTotal = await this.beginCancelling(
+
+    // Phase 1: re-enter CANCELLING + capture pre-total.
+    const preTotal = await this.beginRetrying(
       request.id,
       request.employeeId,
       request.locationId,
@@ -96,6 +104,7 @@ export class CancellationSagaService {
       correlationId,
     );
 
+    // Phase 2: HCM increment with the same idempotency key as the original saga.
     const idempotencyKey = `${request.id}:increment`;
     const hcmRequest = {
       employee_id: request.employeeId,
@@ -123,6 +132,7 @@ export class CancellationSagaService {
         new_total_days: verified.newTotalDays,
         hcm_correlation_id: verified.correlationId,
         outcome: 'confirmed',
+        retry: true,
       };
       const committed = await this.commit(
         request.id,
@@ -135,8 +145,6 @@ export class CancellationSagaService {
         correlationId,
         hcmMeta,
       );
-      // Post-commit drift sanity check (REQ-SYNC-04a): only on a real CANCELLED
-      // commit, never the deferred CANCELLING path. Fire-and-forget.
       if (committed.status === 'CANCELLED') {
         this.driftDetection.scheduleDriftCheck(
           request.employeeId,
@@ -150,9 +158,6 @@ export class CancellationSagaService {
       return committed;
     } catch (err) {
       if (err instanceof HcmBreakerOpenError) {
-        // The breaker OPENed mid-flight after we entered CANCELLING. We cannot
-        // roll back to APPROVED, so we route to CANCELLATION_FAILED with the F-01
-        // reason rather than leave the request transient (REQ-DEF-07).
         const hcmMeta = {
           request: hcmRequest,
           expected_pre_total: preTotal,
@@ -160,6 +165,7 @@ export class CancellationSagaService {
           duration_ms: Date.now() - startedAt,
           reason: 'hcm_unreachable',
           outcome: 'failed',
+          retry: true,
         };
         return this.fail(
           request.id,
@@ -179,12 +185,9 @@ export class CancellationSagaService {
           actual: err instanceof HcmArithmeticMismatchError ? err.actual : undefined,
           reason: err.reason,
           outcome: 'failed',
+          retry: true,
         };
         const failed = await this.fail(request.id, actor, err, correlationId, hcmMeta);
-        // After CANCELLATION_FAILED commits, enqueue a targeted point recon for the
-        // two single-balance drift signals — F-05 (HCM 409 insufficient) and F-04
-        // (ambiguous adjust). An INCREMENT 409-insufficient is unlikely, but the
-        // structure mirrors the forward saga (REQ-SYNC-04, REQ-SYNC-08).
         if (
           err instanceof HcmInsufficientBalanceError ||
           err instanceof HcmArithmeticMismatchError
@@ -202,8 +205,11 @@ export class CancellationSagaService {
     }
   }
 
-  /** T-09: transition to CANCELLING, capture the pre-call local total, audit. */
-  private async beginCancelling(
+  /**
+   * T_retry_1: transition to CANCELLING, capture the pre-call local total, audit.
+   * No balance check or re-reservation: CANCELLING holds no reservation (ADR-012).
+   */
+  private async beginRetrying(
     requestId: string,
     employeeId: string,
     locationId: string,
@@ -213,7 +219,7 @@ export class CancellationSagaService {
     return this.dataSource.transaction(async (manager) => {
       await this.requestRepository.casStatus(
         requestId,
-        'APPROVED',
+        'CANCELLATION_FAILED',
         'CANCELLING',
         { decidedBy: actor.sub },
         manager,
@@ -226,8 +232,9 @@ export class CancellationSagaService {
           entityType: 'REQUEST',
           entityId: requestId,
           action: 'request.cancelling',
-          beforeState: { status: 'APPROVED' },
+          beforeState: { status: 'CANCELLATION_FAILED' },
           afterState: { status: 'CANCELLING' },
+          metadata: { retry: true },
           correlationId,
         },
         manager,
@@ -236,7 +243,13 @@ export class CancellationSagaService {
     });
   }
 
-  /** T-10 success: commit the increment (total += days, reserved UNCHANGED), audit. */
+  /**
+   * T_retry_2 success: commit the increment (total += days, reserved UNCHANGED),
+   * transition to CANCELLED, audit.
+   * R-04 fix: skip total delta if reconciliation already applied it.
+   * Deliberately does NOT touch reserved_days — CANCELLING holds no reservation
+   * (ADR-012).
+   */
   private async commit(
     requestId: string,
     employeeId: string,
@@ -248,19 +261,11 @@ export class CancellationSagaService {
     correlationId: string,
     hcmMeta: Record<string, unknown>,
   ): Promise<RequestResponse> {
-    // R-04 fix (Plan 06): if a batch reconciliation has already absorbed the HCM
-    // increment between our OCC retries, the fresh balance total already equals
-    // `preTotal + days`. Re-applying the delta would double-add. We detect this
-    // by comparing the fresh total to the expected post-commit total; if they
-    // match, we skip the total delta (reserved is 0 for CANCELLING, so no change).
     const expectedPostTotal = preTotal + days;
     try {
       return await withOccRetry(() =>
         this.dataSource.transaction(async (manager) => {
           const balance = await this.requireBalance(employeeId, locationId, manager);
-          // reservedDelta = 0: CANCELLING holds NO reservation (APPROVED already
-          // cleared reserved at T-03), so only total_days moves (ADR-012).
-          // R-04: skip total delta if reconciliation already applied it.
           const alreadyApplied = balance.totalDays === expectedPostTotal;
           const totalDelta = alreadyApplied ? 0 : +days;
           await this.balanceRepository.casCommit(
@@ -307,9 +312,6 @@ export class CancellationSagaService {
       );
     } catch (err) {
       if (err instanceof OccConflictError) {
-        // HCM confirmed but the local commit lost the version race past the retry
-        // budget. Leave the request CANCELLING for the stuck-state sweep (Plan 06);
-        // never force a CAS-less write (R-04).
         return this.deferCommit(requestId, correlationId, hcmMeta);
       }
       throw err;
@@ -317,9 +319,10 @@ export class CancellationSagaService {
   }
 
   /**
-   * T-11 failure: transition to CANCELLATION_FAILED, audit. Deliberately does NOT
-   * call `casRelease`: CANCELLING holds no reservation, so a release would corrupt
-   * the balance — the named copy-paste hazard from ADR-012, guarded by a test.
+   * T_retry_2 failure: transition to CANCELLATION_FAILED, audit. Deliberately
+   * does NOT call casRelease — CANCELLING holds no reservation, so a release
+   * would corrupt the balance (ADR-012 copy-paste hazard, same guard as the
+   * primary cancellation saga).
    */
   private async fail(
     requestId: string,
@@ -388,11 +391,6 @@ export class CancellationSagaService {
     return toRequestResponse(current!);
   }
 
-  /**
-   * Audits a breaker fast-fail at the entry pre-gate. No state transition occurs
-   * (the request stays APPROVED); this entry exists so an operator can answer
-   * "why did this cancel 503?" (TRD §11.2).
-   */
   private async recordBreakerFastFail(
     requestId: string,
     actor: Principal,
