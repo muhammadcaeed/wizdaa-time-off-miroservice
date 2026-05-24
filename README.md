@@ -1,98 +1,138 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Time-Off Microservice
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A NestJS + TypeScript + SQLite microservice that manages the lifecycle of time-off requests (submit → approve/reject → cancel) while keeping per-employee, per-location balances consistent with an external HCM that is the source of truth. The HCM has multiple independent writers and unreliable error reporting, so the service mirrors HCM state defensively: a reservation model for instant employee feedback, sagas with an arithmetic-verified HCM round-trip for approvals/cancellations, a circuit breaker + retry for HCM faults, and scheduled reconciliation to absorb changes that originate outside this service.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+- **Design narrative (the TRD):** [`docs/TRD.md`](docs/TRD.md) — the source of truth, with the four challenges, the chosen solution, and alternatives.
+- **How it was built:** [`docs/plan/README.md`](docs/plan/README.md) — the eight-cycle vertical-slice development plan.
+- **Proof of coverage:** [`docs/trd/traceability.md`](docs/trd/traceability.md) — every requirement and invariant mapped to a test, CI-enforced.
 
-## Description
+---
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## The four challenges from the brief, and where each is solved
 
-## Project setup
+The assignment names four interesting challenges. Each maps to a TRD section, a development cycle, and the tests that prove it. Run the test for any row with:
 
 ```bash
-$ npm install
+npx vitest run --config vitest.config.coverage.ts <name-fragment>
 ```
 
-## Compile and run the project
+| # | Challenge (from the brief) | Solution | TRD | Plan | Primary tests (REQ / scenario) | Run |
+|---|---|---|---|---|---|---|
+| 1 | "ExampleHR is not the only system that updates HCM … work anniversary or start of the year … refresh of time off balances" | Scheduled **batch reconciliation** discovers external changes (no webhooks); safe drift updates the local total, unsafe drift (HCM < reserved) raises a conflict; **point reconciliation** handles single-balance drift detected on the hot path. | §9.2, §9.3, §9.7 | 04, 06 | REQ-REC-01..06, F-08, R-06 — `reconciliation.service.spec.ts`, `reconciliation.e2e-spec.ts` | `npx vitest run --config vitest.config.coverage.ts reconciliation` |
+| 2 | "HCM provides a realtime API for getting or sending time off values" | Approval/cancellation sagas call the realtime `POST /balances/adjust`; reads use the realtime reader. Every write carries an idempotency key `<request_id>:<op>`. | §9.1, §9.2 | 02, 03 | REQ-SYNC-01/02/03 — `hcm-client.contract.spec.ts`, `hcm-reader-client.contract.spec.ts` | `npx vitest run --config vitest.config.coverage.ts hcm-client.contract` |
+| 3 | "HCM provides a batch end point that would send the whole corpus of time off balances" | Reconciliation pulls the batch endpoint with `since=<last_run>`, paginated, and reconciles each balance against local state inside an OCC-guarded transaction. | §9.3 | 04 | REQ-REC-01, REQ-REC-04 — `reconciliation.service.spec.ts` (batch path), `reconciliation.repository.spec.ts` | `npx vitest run --config vitest.config.coverage.ts reconciliation.service` |
+| 4 | "We can count on HCM to send back errors … HOWEVER this may not be always guaranteed; we want to be defensive about it." | Never trust a 2xx blindly: a mandatory **arithmetic check** (`new_total == pre_total ± delta`) + `hcm_correlation_id` presence on every adjust response; ambiguous responses fail the saga and enqueue point reconciliation; **circuit breaker + retry** for faults; a **stuck-state sweep** resolves requests wedged mid-saga. | §9.4, §9.7, §11 | 02, 03, 06 | REQ-SYNC-03/04, F-01..F-05, REQ-DEF-07/11/12 — `hcm-response-check.spec.ts`, `circuit-breaker.spec.ts`, `stuck-state-sweep.e2e-spec.ts` | `npx vitest run --config vitest.config.coverage.ts hcm-response-check` |
+
+A fifth cross-cutting concern — **concurrent writes preserving balance invariants** (employees, managers, and reconciliation acting on the same row) — is handled by optimistic concurrency with bounded retry and verified by property-based tests over random operation sequences (INV-01..05, R-01..R-06; `invariants.property.spec.ts`, TRD §10).
+
+---
+
+## Architecture at a glance
+
+```
+                 HTTP (REST, /api/v1, JWT HS256)
+                          │
+        ┌─────────────────▼──────────────────┐         realtime adjust / read
+        │      time-off-service (NestJS)      │  ───────────────────────────────▶  ┌──────────────┐
+        │                                     │         batch corpus (since=)       │     HCM      │
+        │  reservation · approval saga ·      │  ───────────────────────────────▶  │ (mock-hcm in │
+        │  cancellation saga · reconciliation │         arithmetic-checked 2xx      │  this repo)  │
+        │  · circuit breaker · stuck sweep    │  ◀───────────────────────────────  └──────────────┘
+        └─────────────────┬──────────────────┘
+                          │ TypeORM (migrations, never synchronize)
+                 ┌────────▼─────────┐
+                 │  SQLite (WAL)    │  requests · balances · audit (append-only)
+                 │                  │  idempotency · reconciliations
+                 └──────────────────┘
+```
+
+- **Reads and submissions** stay local (no HCM call) — instant employee feedback.
+- **Approvals and cancellations** cross to HCM through the saga, gated by the circuit breaker and verified arithmetically.
+- **Reconciliation and the stuck-state sweep** are scheduler-driven; reconciliation skips while the breaker is OPEN.
+- The **mock HCM** ships in this repo (`apps/mock-hcm`) and simulates balance changes (anniversary grants, drift, ambiguous/slow/down scenarios) — per the brief's suggestion to run a real mock server.
+
+---
+
+## Quickstart
+
+Requires Node 20+ and npm.
 
 ```bash
-# development
-$ npm run start
+# 1. Install
+npm install
 
-# watch mode
-$ npm run start:dev
+# 2. Configure environment (every variable is documented in .env.example)
+cp .env.example .env
+#   At minimum set JWT_SIGNING_KEY, DATABASE_FILE, HCM_BASE_URL (defaults work for local dev).
 
-# production mode
-$ npm run start:prod
+# 3. Apply database migrations (schema is migration-driven; synchronize is never enabled)
+npm run migration:run
+
+# 4. Run — two processes (see note below)
+npm run start:mock-hcm      # terminal A: the mock HCM (source-of-truth simulator)
+npm run start               # terminal B: the time-off service on http://localhost:3000/api/v1
 ```
 
-## Run tests
+### Two-process note
+
+This is a NestJS monorepo with **two applications**: `time-off-service` (the microservice) and `mock-hcm` (the HCM simulator the service talks to). For local manual exploration, start both. The automated test suite boots the service in-process and uses the mock HCM as an in-process module or a controlled stub — no separate process is needed to run the tests.
+
+---
+
+## Tests and proof of coverage
+
+The brief's explicit deliverable is "your test cases and proof of coverage." One command produces it:
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npm run ci
 ```
 
-## Deployment
+`ci` runs, in order, and exits non-zero on the first failure:
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+1. **`typecheck`** — `tsc --noEmit` (strict, no `any`).
+2. **`lint:check`** — ESLint.
+3. **`coverage`** — the full suite (unit, integration, contract, e2e, concurrency, chaos, property-based) in one pass with thresholds enforced (see below).
+4. **`verify:traceability`** — proves every requirement maps to a real test and the matrix has no drift.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### Running individual layers
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm test                    # fast inner loop: unit/integration/contract/chaos/property (*.spec.ts)
+npm run test:e2e            # end-to-end HTTP suite only (*.e2e-spec.ts)
+npm run coverage            # every layer + coverage report (HTML + LCOV in ./coverage)
+npm run verify:traceability # requirement ↔ test ↔ matrix consistency check
+npx vitest run --config vitest.config.coverage.ts <name>   # any single spec by name fragment
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+The HTML coverage report is written to `coverage/index.html`.
 
-## Resources
+### Coverage thresholds
 
-Check out a few resources that may come in handy when working with NestJS:
+Two axes (TRD §12, `docs/trd/test-strategy.md` §3): **scenario coverage** is the lead indicator (every state transition, race, failure mode, and invariant has a test — see `docs/trd/traceability.md`); **line coverage** is the lagging one. Enforced floors:
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+- **≥ 85% line coverage overall** (currently ~88%).
+- **Per-file floors on the critical services** (reservation, approval saga, cancellation saga, reconciliation, circuit breaker). These sit at their achievable level; the remaining uncovered lines are documented defensive guards and explicitly-unreachable safety branches, not gaps in scenario coverage.
 
-## Support
+### The traceability verifier
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+`scripts/verify-traceability.ts` parses the `@req REQ-XXX-NN` JSDoc tags on test `describe` blocks, the requirement headings in `docs/trd/requirements.md`, and the matrix in `docs/trd/traceability.md`, then fails the build on any of: an annotation referencing an unknown requirement, a requirement with no covering test, a matrix row pointing at a non-existent test, or requirement/matrix drift. Its own behavior is covered by meta-tests in `scripts/verify-traceability.spec.ts`. The contract is documented in `docs/trd/test-strategy.md` §4.
 
-## Stay in touch
+---
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+## Project layout
 
-## License
+```
+apps/
+  time-off-service/   the microservice (modules: auth, balances, time-off, hcm-sync, reconciliation, health)
+  mock-hcm/           the HCM simulator (scenario control plane: normal, slow, flaky, ambiguous, down)
+scripts/
+  verify-traceability.ts    the CI traceability verifier
+docs/
+  TRD.md              design narrative (source of truth)
+  plan/               the eight implementation cycles
+  trd/                requirements.md, api-contract.md, test-strategy.md, traceability.md, mock-hcm.md, adr/
+```
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+## Stack
+
+NestJS 11 · TypeScript (strict) · TypeORM with checked-in migrations (`synchronize` never enabled) · better-sqlite3 (WAL) · Vitest + supertest + fast-check · class-validator · pino · jsonwebtoken (HS256) · `@nestjs/throttler` · Joi-validated env at boot.

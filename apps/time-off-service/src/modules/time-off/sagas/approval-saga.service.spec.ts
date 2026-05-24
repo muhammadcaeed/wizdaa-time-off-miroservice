@@ -33,8 +33,10 @@ const noopIdempotency = {
  * @req REQ-LIFE-04
  * @req REQ-LIFE-05
  * @req REQ-SYNC-03
+ * @req REQ-SYNC-04a
  * @req REQ-SYNC-05
  * @req INV-03
+ * @req INV-04
  */
 describe('ApprovalSagaService (forward saga T-02/03/04)', () => {
   let dataSource: DataSource;

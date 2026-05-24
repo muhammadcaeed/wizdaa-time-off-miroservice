@@ -32,6 +32,7 @@ const noopIdempotency = {
  * @req REQ-LIFE-11
  * @req REQ-SYNC-04a
  * @req REQ-SYNC-06
+ * @req INV-04
  */
 describe('CancellationSagaService (reverse saga T-09/10/11)', () => {
   let dataSource: DataSource;
