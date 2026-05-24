@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { getLoggerToken, PinoLogger } from 'nestjs-pino';
 import { CircuitBreaker, type CircuitBreakerConfig } from './circuit-breaker';
+import { HcmAdminController } from './hcm-admin.controller';
 import { HCM_ADJUSTER } from './hcm-adjuster';
 import { HcmClient } from './hcm-client';
 import { ResilientHcmAdjuster } from './resilient-hcm-adjuster';
@@ -26,6 +27,7 @@ const defaultSleep = (ms: number): Promise<void> =>
  * so the resilience layer slotted in without touching them.
  */
 @Module({
+  controllers: [HcmAdminController],
   providers: [
     {
       provide: CircuitBreaker,
