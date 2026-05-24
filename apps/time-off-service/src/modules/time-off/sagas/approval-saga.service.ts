@@ -220,6 +220,7 @@ export class ApprovalSagaService {
             employeeId: request.employeeId,
             locationId: request.locationId,
             reason: err.reason,
+            correlationId,
           });
         }
         return failed;

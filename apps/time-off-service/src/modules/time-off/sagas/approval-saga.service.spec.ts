@@ -181,8 +181,14 @@ describe('ApprovalSagaService (forward saga T-02/03/04)', () => {
     // REQ-SYNC-04: an ambiguous (F-04) failure enqueues a targeted point recon,
     // not a full batch run, and never schedules a post-commit drift check.
     expect(enqueued).toEqual([
-      { employeeId: 'emp_001', locationId: 'loc_001', reason: 'hcm_ambiguous' },
+      expect.objectContaining({
+        employeeId: 'emp_001',
+        locationId: 'loc_001',
+        reason: 'hcm_ambiguous',
+      }),
     ]);
+    // The saga's correlationId is threaded through for point-recon traceability.
+    expect(enqueued[0]?.correlationId).toEqual(expect.any(String));
     expect(driftScheduled).toEqual([]);
   });
 

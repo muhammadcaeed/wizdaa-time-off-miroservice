@@ -36,7 +36,10 @@ export class NextTickPointReconciliationQueue implements PointReconciliationQueu
     const work = new Promise<void>((resolve) => {
       process.nextTick(async () => {
         try {
-          await this.reconciler.reconcilePoint(job.employeeId, job.locationId);
+          await this.reconciler.reconcilePoint(job.employeeId, job.locationId, {
+            correlationId: job.correlationId,
+            reason: job.reason,
+          });
         } catch (err) {
           // Swallow: the saga response is already sent; the batch reconciler is the backstop.
           this.logger.error({ err, job }, 'point reconciliation failed');
