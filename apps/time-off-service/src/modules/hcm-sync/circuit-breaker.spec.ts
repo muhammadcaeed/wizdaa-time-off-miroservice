@@ -110,4 +110,52 @@ describe('CircuitBreaker FSM (TRD §11.2)', () => {
     expect(b.snapshot().state).toBe(BREAKER_STATE.OPEN);
     expect(b.snapshot().openUntil).toBe(clock.t + CONFIG.cooldownMs);
   });
+
+  it('isHardOpen() is true only OPEN-and-cooling-down, false once cool-down elapses', () => {
+    const clock = { t: 0 };
+    const b = makeBreaker(clock);
+    expect(b.isHardOpen()).toBe(false); // CLOSED
+    for (let i = 0; i < 5; i++) b.recordFailure();
+    expect(b.isHardOpen()).toBe(true); // OPEN, cooling down
+    clock.t += CONFIG.cooldownMs;
+    // Still OPEN (snapshot unchanged) but cool-down elapsed → no longer hard-open,
+    // so the saga pre-gate falls through to canPass() to drive recovery.
+    expect(b.snapshot().state).toBe(BREAKER_STATE.OPEN);
+    expect(b.isHardOpen()).toBe(false);
+  });
+
+  it('recordIgnored() is a no-op while CLOSED (window + counter untouched)', () => {
+    const b = makeBreaker({ t: 0 });
+    b.recordFailure();
+    b.recordIgnored();
+    const snap = b.snapshot();
+    expect(snap.consecutiveFailures).toBe(1); // not reset by the ignored call
+    expect(snap.window).toEqual([true]); // no false pushed
+  });
+
+  it('recordIgnored() closes the breaker when HALF_OPEN (F-05 probe proves liveness)', () => {
+    const clock = { t: 0 };
+    const b = makeBreaker(clock);
+    for (let i = 0; i < 5; i++) b.recordFailure();
+    clock.t += CONFIG.cooldownMs;
+    b.canPass(); // claim probe
+    b.recordIgnored();
+    expect(b.snapshot().state).toBe(BREAKER_STATE.CLOSED);
+  });
+
+  it('a late probe result while re-OPENed is ignored (no counter mutation, no cool-down restart)', () => {
+    const clock = { t: 0 };
+    const b = makeBreaker(clock);
+    for (let i = 0; i < 5; i++) b.recordFailure();
+    clock.t += CONFIG.cooldownMs;
+    b.canPass(); // claim probe
+    clock.t += CONFIG.probeDeadlineMs;
+    b.canPass(); // deadline → re-OPEN, cool-down restarted from here
+    const openUntil = b.snapshot().openUntil;
+
+    b.recordSuccess(); // late probe success arrives
+    expect(b.snapshot().state).toBe(BREAKER_STATE.OPEN); // does not close
+    b.recordFailure(); // late probe failure arrives
+    expect(b.snapshot().openUntil).toBe(openUntil); // cool-down not restarted
+  });
 });

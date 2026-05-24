@@ -74,14 +74,15 @@ export class ApprovalSagaService {
     }
     await this.authorization.assertCanApprove(actor, request.employeeId);
 
-    // Pre-gate: if the breaker is already OPEN, fast-fail with 503 BEFORE the
-    // SUBMITTED→APPROVING transition. APPROVING→SUBMITTED is not a legal
-    // transition (state machine §5.1), so entering APPROVING first would leave
-    // the request stuck; gating here keeps it non-transient (REQ-DEF-07) while
-    // still fast-failing per REQ-SYNC-06. HALF_OPEN is deliberately allowed
-    // through — the decorator's canPass() claims the single probe; concurrent
-    // callers fast-fail there and surface mid-flight (handled below).
-    if (this.breaker.snapshot().state === 'OPEN') {
+    // Pre-gate: if the breaker is OPEN AND still cooling down, fast-fail 503
+    // BEFORE the SUBMITTED→APPROVING transition. APPROVING→SUBMITTED is not a
+    // legal transition (state machine §5.1), so entering APPROVING first would
+    // leave the request stuck; gating here keeps it non-transient (REQ-DEF-07)
+    // while still fast-failing per REQ-SYNC-06. `isHardOpen()` is non-mutating
+    // and returns false once cool-down elapses, so a post-cooldown call falls
+    // through to the decorator's canPass() to drive the HALF_OPEN probe —
+    // gating on raw state would wedge the breaker open forever.
+    if (this.breaker.isHardOpen()) {
       await this.recordBreakerFastFail(request.id, actor, correlationId);
       throw new HcmUnavailableError();
     }

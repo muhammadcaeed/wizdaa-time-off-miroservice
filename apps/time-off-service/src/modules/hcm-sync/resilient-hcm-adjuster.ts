@@ -62,11 +62,11 @@ export class ResilientHcmAdjuster implements HcmAdjuster {
         if (err.countsTowardBreaker) {
           this.breaker.recordFailure();
         } else {
-          // A non-counting error (F-05) still means HCM responded healthily at
-          // the transport level — it's a domain reject. Reporting it as a
-          // success resolves a HALF_OPEN probe instead of wedging the probe slot
-          // until its deadline, and is a no-op trip-wise while CLOSED.
-          this.breaker.recordSuccess();
+          // A non-counting error (F-05) is a healthy HCM round-trip with a domain
+          // answer. recordIgnored() frees a HALF_OPEN probe slot but is a no-op
+          // while CLOSED/OPEN — it must NOT credit a success into the window
+          // (that would mask genuine HCM ill-health under interleaved F-05s).
+          this.breaker.recordIgnored();
         }
 
         const attemptsRemain = attempt < totalAttempts - 1;

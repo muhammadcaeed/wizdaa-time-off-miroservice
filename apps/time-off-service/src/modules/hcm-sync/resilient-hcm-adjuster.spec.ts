@@ -107,9 +107,10 @@ describe('ResilientHcmAdjuster (retry-inside-breaker, ADR-008)', () => {
       HcmInsufficientBalanceError,
     );
     expect(fake.calls).toHaveLength(1);
-    // HCM responded healthily (domain reject), so it counts as a success outcome,
-    // not a breaker failure — consecutive stays 0 and no failure enters the window.
-    expect(breaker.snapshot().window).toEqual([false]);
+    // F-05 is recorded as IGNORED, not a success: while CLOSED it must not touch
+    // the window or counter (crediting a success would mask HCM ill-health under
+    // interleaved F-05s). The window stays empty and consecutive stays 0.
+    expect(breaker.snapshot().window).toEqual([]);
     expect(breaker.snapshot().consecutiveFailures).toBe(0);
   });
 

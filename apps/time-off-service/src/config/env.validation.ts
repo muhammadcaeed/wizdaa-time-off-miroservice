@@ -33,8 +33,10 @@ export const envValidationSchema = Joi.object({
   HCM_BREAKER_FAILURE_RATE: Joi.number().min(0).max(1).default(0.5),
   HCM_BREAKER_COOLDOWN_MS: Joi.number().positive().default(30000),
   // Deadline for a wedged HALF_OPEN probe to report back before re-OPENing
-  // (TRD §11.2). Default sits above the client timeout + retry budget.
-  HCM_BREAKER_PROBE_DEADLINE_MS: Joi.number().positive().default(10000),
+  // (TRD §11.2). Must exceed the full retry budget — worst case ~4 attempts ×
+  // 5s client timeout + backoff (~21s) — or a still-retrying probe gets falsely
+  // declared dead and the breaker can't recover. 30s clears it.
+  HCM_BREAKER_PROBE_DEADLINE_MS: Joi.number().positive().default(30000),
 
   // Retry (Cycle 03)
   HCM_RETRY_MAX_ATTEMPTS: Joi.number().min(1).default(3),

@@ -96,6 +96,20 @@ export class CircuitBreaker {
   }
 
   /**
+   * Non-mutating check used by the saga's entry pre-gate. True only while the
+   * breaker is OPEN AND still inside its cool-down — i.e. a call should fast-fail
+   * 503 without entering the saga's transient state. Once cool-down elapses this
+   * returns false so the call falls through to {@link canPass}, which is the ONLY
+   * method that advances OPEN→HALF_OPEN and claims the probe. (Gating the saga on
+   * raw `state === OPEN` would wedge the breaker open forever, since no saga call
+   * would ever reach `canPass` to start recovery.)
+   * @returns true to fast-fail at the pre-gate; false to let the call proceed
+   */
+  isHardOpen(): boolean {
+    return this.state === BREAKER_STATE.OPEN && this.now() < this.openUntil;
+  }
+
+  /**
    * Records a successful call. A success while HALF_OPEN closes the breaker and
    * resets the window + consecutive counter (pre-OPEN history is not carried).
    */
@@ -103,6 +117,13 @@ export class CircuitBreaker {
     if (this.state === BREAKER_STATE.HALF_OPEN) {
       this.reset();
       this.transition(BREAKER_STATE.CLOSED, 'probe_succeeded');
+      return;
+    }
+    if (this.state === BREAKER_STATE.OPEN) {
+      // A late probe result arriving after the probe was already declared
+      // deadline-exceeded (re-OPENed). Ignore it: mutating counters here can't
+      // close the breaker (close only happens from HALF_OPEN) and would corrupt
+      // the window of the fresh OPEN period.
       return;
     }
     this.consecutiveFailures = 0;
@@ -119,10 +140,32 @@ export class CircuitBreaker {
       this.openFrom('probe_failed');
       return;
     }
+    if (this.state === BREAKER_STATE.OPEN) {
+      // Late probe-failure after a deadline-driven re-OPEN. Ignore it: calling
+      // openFrom() again would restart the cool-down of an already-OPEN breaker,
+      // silently extending downtime.
+      return;
+    }
     this.consecutiveFailures += 1;
     this.push(true);
     if (this.shouldTrip()) {
       this.openFrom('threshold_reached');
+    }
+  }
+
+  /**
+   * Records a call that completed but neither counts toward the breaker nor
+   * retries (F-05 insufficient balance). It IS a healthy HCM round-trip — HCM
+   * answered with a domain decision — so while HALF_OPEN it proves liveness and
+   * closes the breaker (the only sane choice; holding the probe slot until its
+   * deadline is strictly worse). While CLOSED/OPEN it is a deliberate no-op: it
+   * must not touch the failure window or consecutive counter (ADR-008: F-05
+   * neither retries nor trips).
+   */
+  recordIgnored(): void {
+    if (this.state === BREAKER_STATE.HALF_OPEN) {
+      this.reset();
+      this.transition(BREAKER_STATE.CLOSED, 'probe_ignored_success');
     }
   }
 
