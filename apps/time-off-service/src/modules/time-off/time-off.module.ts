@@ -5,6 +5,7 @@ import { ReconciliationModule } from '../reconciliation/reconciliation.module';
 import { RequestRepository } from './request.repository';
 import { RequestService } from './request.service';
 import { ApprovalSagaService } from './sagas/approval-saga.service';
+import { CancellationSagaService } from './sagas/cancellation-saga.service';
 import { TimeOffController } from './time-off.controller';
 
 /**
@@ -21,7 +22,7 @@ import { TimeOffController } from './time-off.controller';
 @Module({
   imports: [BalancesModule, HcmSyncModule, forwardRef(() => ReconciliationModule)],
   controllers: [TimeOffController],
-  providers: [RequestService, RequestRepository, ApprovalSagaService],
+  providers: [RequestService, RequestRepository, ApprovalSagaService, CancellationSagaService],
   exports: [RequestRepository],
 })
 export class TimeOffModule {}

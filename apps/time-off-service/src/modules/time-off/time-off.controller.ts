@@ -1,4 +1,5 @@
-import { Body, Controller, HttpCode, Param, Post } from '@nestjs/common';
+import { Body, Controller, HttpCode, Param, Post, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { Principal } from '../auth/principal';
 import { Roles } from '../auth/roles.decorator';
@@ -57,5 +58,31 @@ export class TimeOffController {
   @HttpCode(200)
   async reject(@Param('id') id: string, @CurrentUser() actor: Principal): Promise<RequestResponse> {
     return this.requestService.reject(actor, id);
+  }
+
+  /**
+   * Owner or admin cancels a request (T-06/08/09). The {@link RequestService}
+   * routes by state (ADR-012); no `@Roles` guard here because a plain EMPLOYEE
+   * owner may cancel — authorization lives in the service. The status code is
+   * variable: 202 when the reverse saga was accepted (APPROVED future-dated),
+   * 200 for a synchronous terminal transition (SUBMITTED release, APPROVAL_FAILED
+   * discard). `@Res({ passthrough: true })` lets us set the status while NestJS
+   * still serializes the returned body (NestJS docs, controllers#library-specific-approach).
+   * @param id the request id
+   * @param actor the verified caller (owner or admin)
+   * @throws ForbiddenError (403) when the actor is neither owner nor admin
+   * @throws RequestNotFoundError (404) when an admin targets a missing request
+   * @throws InvalidTransitionError (409) for a non-cancellable or past-dated state
+   * @throws HcmUnavailableError (503) when the saga breaker is OPEN
+   */
+  @Post(':id/cancel')
+  async cancel(
+    @Param('id') id: string,
+    @CurrentUser() actor: Principal,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<RequestResponse> {
+    const outcome = await this.requestService.cancel(actor, id);
+    res.status(outcome.accepted ? 202 : 200);
+    return outcome.request;
   }
 }
