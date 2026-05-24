@@ -32,10 +32,13 @@ export const envValidationSchema = Joi.object({
   HCM_BREAKER_FAILURE_THRESHOLD: Joi.number().positive().default(5),
   HCM_BREAKER_FAILURE_RATE: Joi.number().min(0).max(1).default(0.5),
   HCM_BREAKER_COOLDOWN_MS: Joi.number().positive().default(30000),
+  // Deadline for a wedged HALF_OPEN probe to report back before re-OPENing
+  // (TRD §11.2). Default sits above the client timeout + retry budget.
+  HCM_BREAKER_PROBE_DEADLINE_MS: Joi.number().positive().default(10000),
 
   // Retry (Cycle 03)
   HCM_RETRY_MAX_ATTEMPTS: Joi.number().min(1).default(3),
-  HCM_RETRY_BASE_MS: Joi.number().positive().default(200),
+  HCM_RETRY_BASE_MS: Joi.number().positive().default(100),
 
   // Reconciliation (Cycle 04 / 06)
   RECONCILE_INTERVAL_MS: Joi.number().positive().default(3600000),
