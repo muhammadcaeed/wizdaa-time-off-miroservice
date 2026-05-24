@@ -196,14 +196,23 @@ export class RequestService {
     }
     this.authorization.assertCanCancel(actor, request.employeeId);
 
+    // Correlation id for the two no-HCM paths, mirroring the saga paths so every
+    // cancel audit row is traceable (parity with the saga's per-flow id).
+    const correlationId = randomUUID();
     switch (request.status) {
       case 'SUBMITTED':
         // T-08, REQ-LIFE-08: release the local reservation, no HCM call.
-        return { accepted: false, request: await this.releaseSubmitted(actor, request) };
+        return {
+          accepted: false,
+          request: await this.releaseSubmitted(actor, request, correlationId),
+        };
       case 'APPROVAL_FAILED':
         // T-06, REQ-LIFE-13: discard — no HCM, no balance change (the reservation
         // was already released by T-04). Audited as `request.discarded` (ADR-012).
-        return { accepted: false, request: await this.discardFailed(actor, requestId) };
+        return {
+          accepted: false,
+          request: await this.discardFailed(actor, requestId, correlationId),
+        };
       case 'APPROVED':
         // T-09: only future-dated cancels run the reverse saga. Equal-to-today
         // counts as past and is not cancellable (TRD §5.3, REQ-LIFE-09).
@@ -221,6 +230,7 @@ export class RequestService {
   private async releaseSubmitted(
     actor: Principal,
     request: { id: string; employeeId: string; locationId: string; daysRequested: number },
+    correlationId: string,
   ): Promise<RequestResponse> {
     const days = request.daysRequested;
     return withOccRetry(() =>
@@ -250,6 +260,7 @@ export class RequestService {
             action: 'request.cancelled',
             beforeState: { status: 'SUBMITTED' },
             afterState: { status: 'CANCELLED' },
+            correlationId,
           },
           manager,
         );
@@ -260,7 +271,11 @@ export class RequestService {
   }
 
   /** T-06: APPROVAL_FAILED→CANCELLED discard, audited `request.discarded` — one tx, no balance change. */
-  private async discardFailed(actor: Principal, requestId: string): Promise<RequestResponse> {
+  private async discardFailed(
+    actor: Principal,
+    requestId: string,
+    correlationId: string,
+  ): Promise<RequestResponse> {
     return this.dataSource.transaction(async (manager) => {
       await this.requestRepository.casStatus(
         requestId,
@@ -278,6 +293,7 @@ export class RequestService {
           action: 'request.discarded',
           beforeState: { status: 'APPROVAL_FAILED' },
           afterState: { status: 'CANCELLED' },
+          correlationId,
         },
         manager,
       );
