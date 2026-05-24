@@ -1,0 +1,116 @@
+import { Injectable } from '@nestjs/common';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource, type EntityManager } from 'typeorm';
+import { OccConflictError } from '../../common/persistence/occ-conflict.error';
+import { Balance } from '../../database/entities';
+
+/**
+ * Data access for {@link Balance} rows. Every mutating method is an optimistic
+ * compare-and-swap keyed on the `version` column (TRD §10.2, ADR-005): the
+ * UPDATE carries `WHERE id = :id AND version = :expectedVersion` and increments
+ * `version`. A zero-row result means a concurrent writer won the race and the
+ * method throws {@link OccConflictError} for {@link withOccRetry} to handle.
+ *
+ * Mutating methods take the active {@link EntityManager} so the write joins the
+ * caller's transaction (the audit row shares the same commit boundary, INV-05).
+ */
+@Injectable()
+export class BalanceRepository {
+  constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
+
+  /**
+   * Loads the single balance row for an (employee, location) pair.
+   * @returns the balance, or null if none exists for the pair
+   */
+  async findByEmployeeAndLocation(
+    employeeId: string,
+    locationId: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<Balance | null> {
+    return manager.getRepository(Balance).findOne({ where: { employeeId, locationId } });
+  }
+
+  /** All balance rows for an employee (one per location). */
+  async findByEmployeeId(
+    employeeId: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<Balance[]> {
+    return manager.getRepository(Balance).find({ where: { employeeId } });
+  }
+
+  /**
+   * Reserves `delta` days against a balance (T-01). `reserved_days += delta`.
+   * @throws OccConflictError when the version predicate matches zero rows
+   */
+  async casReserve(
+    id: string,
+    expectedVersion: number,
+    delta: number,
+    manager: EntityManager,
+  ): Promise<void> {
+    await this.cas(manager, id, expectedVersion, {
+      reservedDays: () => 'reserved_days + :reservedDelta',
+      params: { reservedDelta: delta },
+    });
+  }
+
+  /**
+   * Commits an approved decrement (T-03): `total_days += totalDelta`,
+   * `reserved_days += reservedDelta` (both negative for an approval), and
+   * records the HCM correlation id.
+   * @throws OccConflictError when the version predicate matches zero rows
+   */
+  async casCommit(
+    id: string,
+    expectedVersion: number,
+    totalDelta: number,
+    reservedDelta: number,
+    correlationId: string,
+    manager: EntityManager,
+  ): Promise<void> {
+    await this.cas(manager, id, expectedVersion, {
+      totalDays: () => 'total_days + :totalDelta',
+      reservedDays: () => 'reserved_days + :reservedDelta',
+      lastHcmCorrelationId: correlationId,
+      lastHcmSyncAt: new Date(),
+      params: { totalDelta, reservedDelta },
+    });
+  }
+
+  /**
+   * Releases a held reservation (T-04 compensation, T-07, T-08):
+   * `reserved_days += reservedDelta` (negative).
+   * @throws OccConflictError when the version predicate matches zero rows
+   */
+  async casRelease(
+    id: string,
+    expectedVersion: number,
+    reservedDelta: number,
+    manager: EntityManager,
+  ): Promise<void> {
+    await this.cas(manager, id, expectedVersion, {
+      reservedDays: () => 'reserved_days + :reservedDelta',
+      params: { reservedDelta },
+    });
+  }
+
+  private async cas(
+    manager: EntityManager,
+    id: string,
+    expectedVersion: number,
+    set: Record<string, unknown> & { params?: Record<string, number> },
+  ): Promise<void> {
+    const { params = {}, ...columns } = set;
+    const result = await manager
+      .createQueryBuilder()
+      .update(Balance)
+      .set({ ...columns, version: () => 'version + 1' })
+      .where('id = :id AND version = :expectedVersion')
+      .setParameters({ id, expectedVersion, ...params })
+      .execute();
+
+    if (!result.affected) {
+      throw new OccConflictError('balances', id);
+    }
+  }
+}
