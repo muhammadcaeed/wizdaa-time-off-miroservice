@@ -3,7 +3,12 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { MockHcmModule } from '../../../../mock-hcm/src/mock-hcm.module';
 import { HcmClient } from './hcm-client';
-import { HcmArithmeticMismatchError } from './hcm.errors';
+import {
+  HcmArithmeticMismatchError,
+  HcmServerError,
+  HcmTimeoutError,
+  HcmTransportError,
+} from './hcm.errors';
 
 /**
  * Contract layer: drives the real {@link HcmClient} over HTTP against the
@@ -72,4 +77,56 @@ describe('HcmClient (contract against mock HCM)', () => {
       }),
     ).rejects.toBeInstanceOf(HcmArithmeticMismatchError);
   });
+
+  /**
+   * Failure-mode taxonomy over real HTTP: the client must map each transport
+   * outcome to the distinct error the retry/breaker policy branches on.
+   *
+   * @req REQ-DEF-07
+   */
+  it('maps an HCM 5xx to HcmServerError (F-03)', async () => {
+    await request(mock.getHttpServer())
+      .post('/mock/control/scenarios')
+      .send({ endpoints: { adjust: 'down' } });
+
+    await expect(adjust('req_c3')).rejects.toBeInstanceOf(HcmServerError);
+  });
+
+  it('maps a transport-level connection failure to HcmTransportError (F-01)', async () => {
+    await request(mock.getHttpServer())
+      .post('/mock/control/scenarios')
+      .send({ endpoints: { adjust: 'network-failure' } });
+
+    await expect(adjust('req_c4')).rejects.toBeInstanceOf(HcmTransportError);
+  });
+
+  it('maps a client-timeout against a slow HCM to HcmTimeoutError (F-02)', async () => {
+    await request(mock.getHttpServer())
+      .post('/mock/control/scenarios')
+      .send({ endpoints: { adjust: 'slow' } }); // default 2000ms latency
+    const impatient = new HcmClient(await mock.getUrl(), 50);
+
+    await expect(
+      impatient.adjustBalance({
+        employeeId: EMP,
+        locationId: LOC,
+        delta: -5,
+        idempotencyKey: 'req_c5:decrement',
+        expectedPreTotal: 20,
+        sourceReference: 'request:req_c5',
+      }),
+    ).rejects.toBeInstanceOf(HcmTimeoutError);
+  });
+
+  /** Single-attempt adjust helper for the failure-mode cases. */
+  function adjust(reqId: string): Promise<unknown> {
+    return client.adjustBalance({
+      employeeId: EMP,
+      locationId: LOC,
+      delta: -5,
+      idempotencyKey: `${reqId}:decrement`,
+      expectedPreTotal: 20,
+      sourceReference: `request:${reqId}`,
+    });
+  }
 });

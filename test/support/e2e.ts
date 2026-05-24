@@ -1,14 +1,27 @@
 import type { Server } from 'node:http';
 import { ValidationPipe, type INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
+import { getLoggerToken, type PinoLogger } from 'nestjs-pino';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../../apps/time-off-service/src/app.module';
 import { InitSchema1779625818136 } from '../../apps/time-off-service/src/database/migrations/1779625818136-InitSchema';
+import { CircuitBreaker } from '../../apps/time-off-service/src/modules/hcm-sync/circuit-breaker';
 import { HCM_ADJUSTER, type HcmAdjuster } from '../../apps/time-off-service/src/modules/hcm-sync/hcm-adjuster';
+import { HcmClient } from '../../apps/time-off-service/src/modules/hcm-sync/hcm-client';
+import { ResilientHcmAdjuster } from '../../apps/time-off-service/src/modules/hcm-sync/resilient-hcm-adjuster';
 
 export interface BootstrapOptions {
   /** Override the HCM adjuster (e.g. a real client pointed at an in-test mock). */
   hcmAdjuster?: HcmAdjuster;
+  /**
+   * Point the REAL resilience stack (retry + the DI {@link CircuitBreaker}) at
+   * the given mock HCM base URL. Unlike `hcmAdjuster`, this keeps the breaker the
+   * saga's entry pre-gate reads and the adjuster's gate the SAME instance, which
+   * is required to exercise breaker-trip behavior end-to-end. Backoff sleeps are
+   * collapsed to keep the suite fast.
+   */
+  hcmBaseUrl?: string;
 }
 
 export interface E2EContext {
@@ -30,6 +43,19 @@ export async function bootstrapE2E(options: BootstrapOptions = {}): Promise<E2EC
   let builder = Test.createTestingModule({ imports: [AppModule] });
   if (options.hcmAdjuster) {
     builder = builder.overrideProvider(HCM_ADJUSTER).useValue(options.hcmAdjuster);
+  } else if (options.hcmBaseUrl) {
+    const baseUrl = options.hcmBaseUrl;
+    builder = builder.overrideProvider(HCM_ADJUSTER).useFactory({
+      inject: [CircuitBreaker, ConfigService, getLoggerToken(ResilientHcmAdjuster.name)],
+      factory: (breaker: CircuitBreaker, config: ConfigService, logger: PinoLogger) => {
+        const client = new HcmClient(baseUrl, config.getOrThrow<number>('HCM_TIMEOUT_MS'));
+        const policy = {
+          maxAttempts: config.getOrThrow<number>('HCM_RETRY_MAX_ATTEMPTS'),
+          baseMs: config.getOrThrow<number>('HCM_RETRY_BASE_MS'),
+        };
+        return new ResilientHcmAdjuster(client, breaker, policy, () => 0.5, async () => {}, logger);
+      },
+    });
   }
   const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication();
