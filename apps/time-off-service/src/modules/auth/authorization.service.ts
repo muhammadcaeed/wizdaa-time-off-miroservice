@@ -62,6 +62,20 @@ export class AuthorizationService {
     throw new ForbiddenError();
   }
 
+  /**
+   * Asserts the actor may cancel a request owned by `ownerEmployeeId`: the owner
+   * themselves or an ADMIN. Unlike {@link assertCanApprove}, a MANAGER does NOT
+   * get cancel — cancellation is the owner's prerogative or an admin correction
+   * (Plan 05, api-contract.md §3).
+   * @throws ForbiddenError when not permitted
+   */
+  assertCanCancel(actor: Principal, ownerEmployeeId: string): void {
+    if (this.has(actor, 'ADMIN') || actor.sub === ownerEmployeeId) {
+      return;
+    }
+    throw new ForbiddenError();
+  }
+
   private async isDirectReport(employeeId: string, managerId: string): Promise<boolean> {
     const employee = await this.employeeRepository.findById(employeeId);
     return employee?.managerId === managerId;
