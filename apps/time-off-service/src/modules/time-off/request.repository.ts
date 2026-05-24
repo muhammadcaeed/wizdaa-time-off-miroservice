@@ -207,8 +207,9 @@ export class RequestRepository {
         }
         return cursorValue;
       }
-    } catch {
-      // fall through to the typed error below
+    } catch (err) {
+      if (err instanceof RequestCursorError) throw err;
+      // JSON parse or structural failure — fall through
     }
     throw new RequestCursorError();
   }

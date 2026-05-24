@@ -177,18 +177,8 @@ export class DomainExceptionFilter implements ExceptionFilter {
 
   /**
    * Writes the RFC 7807 Problem Details response with the correct Content-Type.
-   *
-   * Express's `res.json()` forces `Content-Type: application/json`; we
-   * override it afterwards. Calling `res.setHeader` *before* `res.json` is
-   * insufficient because json() re-sets the type, so we set it on the value
-   * returned by `res.status()` after json() has run. We call `setHeader`
-   * directly on the status-chained object which still holds the response
-   * reference, then call json which re-opens the write pipeline and emits
-   * the body.
-   *
-   * The reliable pattern: `response.status(s)` returns `this`, call
-   * `setHeader` on it, then call `json`. Express sets `Content-Type` inside
-   * `json()` only when it hasn't been explicitly set, so we set it first.
+   * Express sets `Content-Type` inside `json()` only when it has not already
+   * been explicitly set, so calling `setHeader` before `json` is sufficient.
    */
   private send(response: Response, status: number, body: Record<string, unknown>): void {
     response.status(status).setHeader('Content-Type', 'application/problem+json').json(body);

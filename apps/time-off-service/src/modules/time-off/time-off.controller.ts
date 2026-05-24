@@ -1,8 +1,20 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query, Req, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Query,
+  Req,
+  Res,
+  UseInterceptors,
+} from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { Principal } from '../auth/principal';
 import { Roles } from '../auth/roles.decorator';
+import { IdempotencyInterceptor } from './idempotency.interceptor';
 import { RequestService, type IdempotencyContext } from './request.service';
 import { ApprovalSagaService } from './sagas/approval-saga.service';
 import { ApprovalRetryService } from './sagas/approval-retry.service';
@@ -23,6 +35,7 @@ function idemFrom(
 }
 
 /** Time-off request lifecycle endpoints (api-contract.md §2). */
+@UseInterceptors(IdempotencyInterceptor)
 @Controller('requests')
 export class TimeOffController {
   constructor(

@@ -31,5 +31,5 @@ export class ListRequestsQueryDto {
 
   @IsOptional()
   @IsIn(VALID_STATUSES)
-  status?: string;
+  status?: (typeof VALID_STATUSES)[number];
 }

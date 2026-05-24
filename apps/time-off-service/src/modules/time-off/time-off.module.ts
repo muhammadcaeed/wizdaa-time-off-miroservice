@@ -1,5 +1,4 @@
 import { forwardRef, Module } from '@nestjs/common';
-import { APP_INTERCEPTOR } from '@nestjs/core';
 import { BalancesModule } from '../balances/balances.module';
 import { HcmSyncModule } from '../hcm-sync/hcm-sync.module';
 import { ReconciliationModule } from '../reconciliation/reconciliation.module';
@@ -33,10 +32,10 @@ import { TimeOffController } from './time-off.controller';
  * (REQ-SYNC-04/04a/08, ADR-011). {@link SchedulerRegistry} is available because
  * {@link ReconciliationModule} already imports {@link ScheduleModule.forRoot}.
  *
- * {@link IdempotencyInterceptor} is registered as a module-scoped
- * {@link APP_INTERCEPTOR} so it applies only to this module's controllers
- * (TimeOffController). It only acts on POST requests with an Idempotency-Key
- * header; all other requests pass through transparently.
+ * {@link IdempotencyInterceptor} is applied at the controller level via
+ * `@UseInterceptors` on {@link TimeOffController}. It only acts on POST
+ * requests with an Idempotency-Key header; all other requests pass through
+ * transparently.
  */
 @Module({
   imports: [BalancesModule, HcmSyncModule, forwardRef(() => ReconciliationModule)],
@@ -52,7 +51,7 @@ import { TimeOffController } from './time-off.controller';
     StuckStateSweepScheduler,
     IdempotencyService,
     IdempotencyCleanupService,
-    { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor },
+    IdempotencyInterceptor,
   ],
   exports: [RequestRepository],
 })

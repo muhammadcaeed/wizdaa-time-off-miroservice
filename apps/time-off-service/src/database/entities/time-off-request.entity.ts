@@ -30,6 +30,8 @@ export type RequestStatus =
 @Index('idx_time_off_requests_employee_status', ['employeeId', 'status'])
 @Index('idx_time_off_requests_status', ['status'])
 @Index('idx_time_off_requests_start_date', ['startDate'])
+@Index('idx_time_off_requests_submitted_at_id', ['submittedAt', 'id'])
+@Index('idx_time_off_requests_status_submitted_at_id', ['status', 'submittedAt', 'id'])
 export class TimeOffRequest {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

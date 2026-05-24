@@ -346,7 +346,9 @@ export class ApprovalRetryService {
           const updated = await this.requestRepository.findById(requestId, manager);
           const response = toRequestResponse(updated!);
           // 202 is the approval-retry endpoint status code.
-          await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+          if (idem) {
+            await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+          }
           return response;
         }),
       );
@@ -409,7 +411,9 @@ export class ApprovalRetryService {
         const updated = await this.requestRepository.findById(requestId, manager);
         const response = toRequestResponse(updated!);
         // 202 is the approval-retry endpoint status code.
-        await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+        if (idem) {
+          await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+        }
         return response;
       }),
     );
@@ -436,7 +440,9 @@ export class ApprovalRetryService {
         manager,
       );
       // 202 is the approval-retry endpoint status code.
-      await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+      if (idem) {
+        await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+      }
     });
     return response;
   }

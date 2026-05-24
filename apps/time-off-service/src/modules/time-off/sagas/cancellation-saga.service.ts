@@ -315,7 +315,9 @@ export class CancellationSagaService {
           const updated = await this.requestRepository.findById(requestId, manager);
           const response = toRequestResponse(updated!);
           // 202 is the cancel-APPROVED endpoint status code.
-          await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+          if (idem) {
+            await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+          }
           return response;
         }),
       );
@@ -378,7 +380,9 @@ export class CancellationSagaService {
         const updated = await this.requestRepository.findById(requestId, manager);
         const response = toRequestResponse(updated!);
         // 202 is the cancel-APPROVED endpoint status code.
-        await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+        if (idem) {
+          await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+        }
         return response;
       }),
     );
@@ -407,7 +411,9 @@ export class CancellationSagaService {
         manager,
       );
       // 202 is the cancel-APPROVED endpoint status code.
-      await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+      if (idem) {
+        await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+      }
     });
     return response;
   }

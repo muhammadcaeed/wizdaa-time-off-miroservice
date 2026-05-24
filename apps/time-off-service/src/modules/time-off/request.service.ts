@@ -133,8 +133,9 @@ export class RequestService {
 
         const created = await this.requestRepository.findById(requestId, manager);
         const response = toRequestResponse(created!);
-        // 201 is the submit status code.
-        await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 201, response, manager);
+        if (idem) {
+          await this.idempotencyService.record(idem.key, idem.hash, 201, response, manager);
+        }
         return response;
       }),
     );
@@ -247,8 +248,9 @@ export class RequestService {
         );
         const updated = await this.requestRepository.findById(requestId, manager);
         const response = toRequestResponse(updated!);
-        // 200 is the reject status code.
-        await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 200, response, manager);
+        if (idem) {
+          await this.idempotencyService.record(idem.key, idem.hash, 200, response, manager);
+        }
         return response;
       }),
     );
@@ -357,8 +359,9 @@ export class RequestService {
         );
         const updated = await this.requestRepository.findById(request.id, manager);
         const response = toRequestResponse(updated!);
-        // 200 — synchronous terminal cancel.
-        await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 200, response, manager);
+        if (idem) {
+          await this.idempotencyService.record(idem.key, idem.hash, 200, response, manager);
+        }
         return response;
       }),
     );
@@ -394,8 +397,9 @@ export class RequestService {
       );
       const updated = await this.requestRepository.findById(requestId, manager);
       const response = toRequestResponse(updated!);
-      // 200 — synchronous terminal cancel.
-      await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 200, response, manager);
+      if (idem) {
+        await this.idempotencyService.record(idem.key, idem.hash, 200, response, manager);
+      }
       return response;
     });
   }

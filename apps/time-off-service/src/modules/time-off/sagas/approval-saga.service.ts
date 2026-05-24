@@ -343,7 +343,9 @@ export class ApprovalSagaService {
           const updated = await this.requestRepository.findById(requestId, manager);
           const response = toRequestResponse(updated!);
           // 202 is the approve status code.
-          await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+          if (idem) {
+            await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+          }
           return response;
         }),
       );
@@ -409,7 +411,9 @@ export class ApprovalSagaService {
         const updated = await this.requestRepository.findById(requestId, manager);
         const response = toRequestResponse(updated!);
         // 202 is the approve endpoint status code even on APPROVAL_FAILED.
-        await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+        if (idem) {
+          await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+        }
         return response;
       }),
     );
@@ -438,7 +442,9 @@ export class ApprovalSagaService {
         manager,
       );
       // 202 is the approve endpoint status code.
-      await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+      if (idem) {
+        await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+      }
     });
     return response;
   }

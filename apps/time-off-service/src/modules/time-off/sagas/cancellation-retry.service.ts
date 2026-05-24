@@ -320,7 +320,9 @@ export class CancellationRetryService {
           const updated = await this.requestRepository.findById(requestId, manager);
           const response = toRequestResponse(updated!);
           // 202 is the cancellation-retry endpoint status code.
-          await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+          if (idem) {
+            await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+          }
           return response;
         }),
       );
@@ -381,7 +383,9 @@ export class CancellationRetryService {
         const updated = await this.requestRepository.findById(requestId, manager);
         const response = toRequestResponse(updated!);
         // 202 is the cancellation-retry endpoint status code.
-        await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+        if (idem) {
+          await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+        }
         return response;
       }),
     );
@@ -408,7 +412,9 @@ export class CancellationRetryService {
         manager,
       );
       // 202 is the cancellation-retry endpoint status code.
-      await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+      if (idem) {
+        await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+      }
     });
     return response;
   }
