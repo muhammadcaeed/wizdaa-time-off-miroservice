@@ -14,6 +14,7 @@ import type { PointReconciliationQueue } from '../../apps/time-off-service/src/m
 import { RequestRepository } from '../../apps/time-off-service/src/modules/time-off/request.repository';
 import { RequestService } from '../../apps/time-off-service/src/modules/time-off/request.service';
 import { ApprovalSagaService } from '../../apps/time-off-service/src/modules/time-off/sagas/approval-saga.service';
+import { CancellationSagaService } from '../../apps/time-off-service/src/modules/time-off/sagas/cancellation-saga.service';
 import { createTestDataSource } from './db';
 
 /** No-op point queue: the property driver never exercises drift enqueue paths. */
@@ -71,7 +72,24 @@ export class ApplicationDriver {
     const requestRepo = new RequestRepository(dataSource);
     const audit = new AuditService(new AuditRepository());
     const authz = new AuthorizationService(new EmployeeRepository(dataSource));
-    const requestService = new RequestService(dataSource, balanceRepo, requestRepo, audit, authz);
+    const cancellationSaga = new CancellationSagaService(
+      dataSource,
+      balanceRepo,
+      requestRepo,
+      audit,
+      confirmingHcm,
+      closedBreaker(),
+      noopQueue,
+      noopDrift,
+    );
+    const requestService = new RequestService(
+      dataSource,
+      balanceRepo,
+      requestRepo,
+      audit,
+      authz,
+      cancellationSaga,
+    );
     const saga = new ApprovalSagaService(
       dataSource,
       balanceRepo,
