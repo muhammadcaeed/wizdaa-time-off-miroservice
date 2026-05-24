@@ -11,6 +11,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/jwt-auth.guard';
 import { RolesGuard } from './modules/auth/roles.guard';
 import { BalancesModule } from './modules/balances/balances.module';
+import { ReconciliationModule } from './modules/reconciliation/reconciliation.module';
 import { TimeOffModule } from './modules/time-off/time-off.module';
 
 @Module({
@@ -37,6 +38,7 @@ import { TimeOffModule } from './modules/time-off/time-off.module';
     AuditModule,
     BalancesModule,
     TimeOffModule,
+    ReconciliationModule,
   ],
   providers: [
     // Global authentication, then coarse role gate, then domain-error mapping.

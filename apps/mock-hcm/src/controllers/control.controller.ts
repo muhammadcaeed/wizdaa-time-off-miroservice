@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
-import { InjectBalanceDto, SetScenarioDto } from '../dto/control.dto';
+import { Body, Controller, Get, NotFoundException, Post } from '@nestjs/common';
+import { DriftBalanceDto, InjectBalanceDto, SetScenarioDto } from '../dto/control.dto';
 import { type CallLogEntry, CallLogService } from '../services/call-log.service';
 import { IdempotencyService } from '../services/idempotency.service';
 import { type ScenarioAssignment, ScenarioService } from '../services/scenario.service';
@@ -51,6 +51,22 @@ export class ControlController {
       total_days: body.total_days,
       last_modified_at: body.last_modified_at ?? new Date().toISOString(),
     });
+  }
+
+  /**
+   * Silently drifts a stored balance: changes total_days but leaves
+   * last_modified_at untouched, so the batch `since` filter won't surface it
+   * (mock-hcm.md §3.3). Used to exercise the post-commit drift check.
+   * @param body the (employee, location) pair and new total
+   * @returns nothing
+   * @throws NotFoundException if the (employee, location) pair is unknown
+   */
+  @Post('drift')
+  drift(@Body() body: DriftBalanceDto): void {
+    if (this.storage.find(body.employee_id, body.location_id) === undefined) {
+      throw new NotFoundException(`Unknown balance for ${body.employee_id}:${body.location_id}`);
+    }
+    this.storage.drift(body.employee_id, body.location_id, body.total_days);
   }
 
   /**

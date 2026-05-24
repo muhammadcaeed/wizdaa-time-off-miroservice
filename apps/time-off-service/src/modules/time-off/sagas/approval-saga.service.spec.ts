@@ -12,6 +12,11 @@ import { CircuitBreaker } from '../../hcm-sync/circuit-breaker';
 import type { HcmAdjuster } from '../../hcm-sync/hcm-adjuster';
 import { HcmArithmeticMismatchError } from '../../hcm-sync/hcm.errors';
 import { BalanceRepository } from '../../balances/balance.repository';
+import type { DriftDetectionService } from '../../reconciliation/drift-detection.service';
+import type {
+  PointReconciliationJob,
+  PointReconciliationQueue,
+} from '../../reconciliation/point-reconciliation-queue';
 import { RequestRepository } from '../request.repository';
 import { ApprovalSagaService } from './approval-saga.service';
 
@@ -30,10 +35,30 @@ describe('ApprovalSagaService (forward saga T-02/03/04)', () => {
 
   const manager: Principal = { sub: 'mgr_001', roles: ['MANAGER'] };
 
+  /** Captures point-recon enqueues so the F-04/F-05 wiring can be asserted (REQ-SYNC-04). */
+  let enqueued: PointReconciliationJob[];
+  /** Captures post-commit drift schedules so the APPROVED wiring can be asserted (REQ-SYNC-04a). */
+  let driftScheduled: { employeeId: string; locationId: string; committedTotal: number }[];
+
   function buildSaga(
     hcm: HcmAdjuster,
     breaker: CircuitBreaker = closedBreaker(),
   ): ApprovalSagaService {
+    const queue: PointReconciliationQueue = {
+      enqueue: (job) => {
+        enqueued.push(job);
+      },
+    };
+    const drift = {
+      scheduleDriftCheck: (
+        employeeId: string,
+        locationId: string,
+        _op: 'decrement' | 'increment',
+        committedTotal: number,
+      ) => {
+        driftScheduled.push({ employeeId, locationId, committedTotal });
+      },
+    } as unknown as DriftDetectionService;
     return new ApprovalSagaService(
       dataSource,
       balanceRepo,
@@ -42,6 +67,8 @@ describe('ApprovalSagaService (forward saga T-02/03/04)', () => {
       new AuthorizationService(new EmployeeRepository(dataSource)),
       hcm,
       breaker,
+      queue,
+      drift,
     );
   }
 
@@ -55,6 +82,8 @@ describe('ApprovalSagaService (forward saga T-02/03/04)', () => {
   }
 
   beforeEach(async () => {
+    enqueued = [];
+    driftScheduled = [];
     dataSource = await createTestDataSource();
     balanceRepo = new BalanceRepository(dataSource);
     requestRepo = new RequestRepository(dataSource);
@@ -112,6 +141,12 @@ describe('ApprovalSagaService (forward saga T-02/03/04)', () => {
     expect(actions).toContain('request.approving');
     expect(actions).toContain('request.approved');
     expect(actions).toContain('hcm.decrement.confirmed');
+
+    // REQ-SYNC-04a: a successful commit schedules a post-commit drift check
+    // against the committed local total (pre 10 + delta -3 = 7).
+    expect(driftScheduled).toEqual([
+      { employeeId: 'emp_001', locationId: 'loc_001', committedTotal: 7 },
+    ]);
   });
 
   it('fails to APPROVAL_FAILED and releases the reservation on an ambiguous HCM response (T-04, F-04)', async () => {
@@ -142,6 +177,19 @@ describe('ApprovalSagaService (forward saga T-02/03/04)', () => {
       expected: 7,
       actual: 8,
     });
+
+    // REQ-SYNC-04: an ambiguous (F-04) failure enqueues a targeted point recon,
+    // not a full batch run, and never schedules a post-commit drift check.
+    expect(enqueued).toEqual([
+      expect.objectContaining({
+        employeeId: 'emp_001',
+        locationId: 'loc_001',
+        reason: 'hcm_ambiguous',
+      }),
+    ]);
+    // The saga's correlationId is threaded through for point-recon traceability.
+    expect(enqueued[0]?.correlationId).toEqual(expect.any(String));
+    expect(driftScheduled).toEqual([]);
   });
 
   it('leaves the request APPROVING when the post-HCM commit exhausts OCC retries (R-04, no sweep yet)', async () => {

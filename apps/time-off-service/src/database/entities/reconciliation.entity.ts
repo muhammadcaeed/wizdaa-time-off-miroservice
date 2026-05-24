@@ -1,7 +1,8 @@
 import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 
 export type ReconciliationStatus = 'RUNNING' | 'COMPLETED' | 'COMPLETED_WITH_CONFLICTS' | 'FAILED';
-export type ReconciliationTrigger = 'SCHEDULED' | 'ON_DEMAND' | 'POINT';
+// Point reconciliations are untracked (ADR-011), so no POINT trigger exists.
+export type ReconciliationTrigger = 'SCHEDULED' | 'ON_DEMAND';
 
 /**
  * A tracked reconciliation run (TRD §4.2, §9.3). The partial UNIQUE index

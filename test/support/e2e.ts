@@ -8,7 +8,9 @@ import { AppModule } from '../../apps/time-off-service/src/app.module';
 import { InitSchema1779625818136 } from '../../apps/time-off-service/src/database/migrations/1779625818136-InitSchema';
 import { CircuitBreaker } from '../../apps/time-off-service/src/modules/hcm-sync/circuit-breaker';
 import { HCM_ADJUSTER, type HcmAdjuster } from '../../apps/time-off-service/src/modules/hcm-sync/hcm-adjuster';
+import { HCM_READER } from '../../apps/time-off-service/src/modules/hcm-sync/hcm-reader';
 import { HcmClient } from '../../apps/time-off-service/src/modules/hcm-sync/hcm-client';
+import { HcmReaderClient } from '../../apps/time-off-service/src/modules/hcm-sync/hcm-reader-client';
 import { ResilientHcmAdjuster } from '../../apps/time-off-service/src/modules/hcm-sync/resilient-hcm-adjuster';
 
 export interface BootstrapOptions {
@@ -78,6 +80,13 @@ export async function bootstrapE2E(options: BootstrapOptions = {}): Promise<E2EC
         };
         return new ResilientHcmAdjuster(client, breaker, policy, () => 0.5, async () => {}, logger);
       },
+    });
+    // Point the READ side at the same in-test mock so reconciliation and the
+    // post-commit drift check (REQ-SYNC-04a) hit the same HCM the saga adjusts.
+    builder = builder.overrideProvider(HCM_READER).useFactory({
+      inject: [ConfigService],
+      factory: (config: ConfigService) =>
+        new HcmReaderClient(baseUrl, config.getOrThrow<number>('HCM_TIMEOUT_MS')),
     });
   }
   const moduleRef = await builder.compile();

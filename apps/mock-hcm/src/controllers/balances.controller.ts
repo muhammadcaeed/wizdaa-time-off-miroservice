@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  BadRequestException,
   Body,
   ConflictException,
   Controller,
@@ -16,15 +17,19 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { AdjustQueryDto, AdjustRequestDto } from '../dto/adjust.dto';
+import { BatchQueryDto } from '../dto/batch.dto';
 import { IdempotencyService } from '../services/idempotency.service';
 import { type ScenarioName, ScenarioService } from '../services/scenario.service';
-import { StorageService } from '../services/storage.service';
+import { type BalanceRow, StorageService } from '../services/storage.service';
 
 /** Default latency injected by the `slow` scenario (mock-hcm.md §4). */
 const DEFAULT_SLOW_LATENCY_MS = 2000;
 
 /** Default failure fraction for the `flaky` scenario (mock-hcm.md §4). */
 const DEFAULT_FAIL_RATE = 0.3;
+
+/** Default page size for the batch endpoint when `limit` is omitted (api-contract.md §5). */
+const DEFAULT_BATCH_LIMIT = 50;
 
 /** Adjust response shape (mock-hcm.md §2.2, TRD §9.1). */
 interface AdjustResponse {
@@ -41,6 +46,12 @@ interface BalancesResponse {
   balances: { location_id: string; total_days: number; last_modified_at: string }[];
 }
 
+/** Paginated batch response shape (mock-hcm.md §2.3, api-contract.md §5). */
+interface BatchResponse {
+  data: BalanceRow[];
+  pagination: { next_cursor: string | null; has_more: boolean };
+}
+
 /**
  * Mirrors the assumed HCM balance surface (mock-hcm.md §2, TRD §9.1).
  */
@@ -53,18 +64,117 @@ export class BalancesController {
   ) {}
 
   /**
+   * Returns the corpus of balances modified at or after `since`, paginated with
+   * an opaque cursor (mock-hcm.md §2.3, api-contract.md §5). Declared before the
+   * `:employee_id` route so the literal `batch` segment isn't captured as a path
+   * param.
+   *
+   * Chaos scenarios are resolved corpus-wide via an unscoped `resolve('batch')`
+   * and applied exactly as the adjust endpoint does (mock-hcm.md §4): `slow`
+   * delays, `down` 503s, `flaky` 5xxs deterministically, `network-failure`
+   * destroys the socket. The `@Res` handle serves both the socket-destroy path
+   * and the JSON write.
+   *
+   * @param query `since` (required ISO-8601), opaque `cursor`, `limit`, and the
+   *   per-request chaos knobs (`latency_ms`, `fail_rate`)
+   * @param res the raw express response (for socket destroy + serialization)
+   * @returns nothing; the response is written via `res`
+   * @throws BadRequestException if the cursor is malformed
+   * @throws ServiceUnavailableException under the `down`/`flaky` scenarios
+   */
+  @Get('batch')
+  async batch(@Query() query: BatchQueryDto, @Res() res: Response): Promise<void> {
+    // Corpus-wide query: empty scope ids mean only unscoped batch scenarios apply.
+    const scenario = this.scenarios.resolve('batch', '', '');
+
+    if (scenario === 'slow') {
+      await delay(query.latency_ms ?? DEFAULT_SLOW_LATENCY_MS);
+    }
+
+    if (scenario === 'network-failure') {
+      res.socket?.destroy();
+      return;
+    }
+
+    if (scenario === 'down') {
+      throw new ServiceUnavailableException('HCM is down (mock scenario)');
+    }
+
+    if (
+      scenario === 'flaky' &&
+      this.scenarios.shouldFlakyFail('batch', query.fail_rate ?? DEFAULT_FAIL_RATE)
+    ) {
+      throw new ServiceUnavailableException('HCM flaky failure (mock scenario)');
+    }
+
+    let page;
+    try {
+      page = this.storage.batchSince(
+        new Date(query.since),
+        query.cursor,
+        query.limit ?? DEFAULT_BATCH_LIMIT,
+      );
+    } catch {
+      throw new BadRequestException('Malformed cursor');
+    }
+
+    const response: BatchResponse = {
+      data: page.rows,
+      pagination: { next_cursor: page.nextCursor, has_more: page.hasMore },
+    };
+    res.status(HttpStatus.OK).json(response);
+  }
+
+  /**
    * Returns every balance row for an employee.
+   *
+   * Chaos scenarios are resolved employee-scoped via `resolve('get_balance', …)`
+   * and applied exactly as the batch endpoint does (mock-hcm.md §4): `slow`
+   * delays, `down` 503s, `flaky` 5xxs deterministically, `network-failure`
+   * destroys the socket. The `@Res` handle serves both the socket-destroy path
+   * and the JSON write.
+   *
    * @param employeeId employee identifier from the path
-   * @returns 200 with the employee's balances
+   * @param query the per-request chaos knobs (`latency_ms`, `fail_rate`)
+   * @param res the raw express response (for socket destroy + serialization)
+   * @returns nothing; the response is written via `res`
    * @throws NotFoundException if the employee is unknown
+   * @throws ServiceUnavailableException under the `down`/`flaky` scenarios
    */
   @Get(':employee_id')
-  getBalances(@Param('employee_id') employeeId: string): BalancesResponse {
+  async getBalances(
+    @Param('employee_id') employeeId: string,
+    @Query() query: AdjustQueryDto,
+    @Res() res: Response,
+  ): Promise<void> {
+    // Location-agnostic: get-balance is per-employee, so the scenario scope omits location.
+    const scenario = this.scenarios.resolve('get_balance', employeeId, '');
+
+    if (scenario === 'slow') {
+      await delay(query.latency_ms ?? DEFAULT_SLOW_LATENCY_MS);
+    }
+
+    if (scenario === 'network-failure') {
+      res.socket?.destroy();
+      return;
+    }
+
+    if (scenario === 'down') {
+      throw new ServiceUnavailableException('HCM is down (mock scenario)');
+    }
+
+    if (
+      scenario === 'flaky' &&
+      this.scenarios.shouldFlakyFail('get_balance', query.fail_rate ?? DEFAULT_FAIL_RATE)
+    ) {
+      throw new ServiceUnavailableException('HCM flaky failure (mock scenario)');
+    }
+
     const rows = this.storage.findByEmployee(employeeId);
     if (rows.length === 0) {
       throw new NotFoundException(`Unknown employee ${employeeId}`);
     }
-    return {
+    const response: BalancesResponse = {
       employee_id: employeeId,
       balances: rows.map((row) => ({
         location_id: row.location_id,
@@ -72,6 +182,7 @@ export class BalancesController {
         last_modified_at: row.last_modified_at,
       })),
     };
+    res.status(HttpStatus.OK).json(response);
   }
 
   /**
@@ -155,6 +266,16 @@ export class BalancesController {
     const row = this.storage.find(body.employee_id, body.location_id);
     if (row === undefined) {
       throw new NotFoundException(`Unknown balance for ${body.employee_id}:${body.location_id}`);
+    }
+
+    // F-05 (REQ-SYNC-08): a real HCM rejects a decrement that would drive the
+    // balance negative with 409 insufficient_balance. The success-variant
+    // scenarios (ambiguous/unverifiable) deliberately bypass this so they can
+    // still exercise their 2xx arithmetic-mismatch paths.
+    const isSuccessVariant =
+      scenario === 'ambiguous-success' || scenario === 'unverifiable-success';
+    if (!isSuccessVariant && row.total_days + body.delta < 0) {
+      throw new ConflictException('insufficient_balance');
     }
 
     const preTotal = row.total_days;

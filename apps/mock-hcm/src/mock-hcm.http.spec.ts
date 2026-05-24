@@ -16,8 +16,22 @@ interface AdjustBody {
 }
 interface StateBody {
   scenarios: unknown[];
-  storage: { employee_id: string; total_days: number }[];
+  storage: {
+    employee_id: string;
+    location_id: string;
+    total_days: number;
+    last_modified_at: string;
+  }[];
   idempotencyKeys: string[];
+}
+interface BatchBody {
+  data: {
+    employee_id: string;
+    location_id: string;
+    total_days: number;
+    last_modified_at: string;
+  }[];
+  pagination: { next_cursor: string | null; has_more: boolean };
 }
 
 /** Reads a supertest response body as a known shape (body is otherwise `any`). */
@@ -195,6 +209,118 @@ describe('Mock HCM (HTTP)', () => {
         .send({ ...adjustBody, employee_id: 'emp_002', source_reference: 'request:req_2' })
         .expect(200);
       expect(body<AdjustBody>(other).new_total_days).toBe(10);
+    });
+  });
+
+  describe('GET /hcm/balances/batch', () => {
+    it('returns 400 when since is missing', async () => {
+      await request(app.getHttpServer()).get('/hcm/balances/batch').expect(400);
+    });
+
+    it('returns the paginated envelope for rows at or after since', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/hcm/balances/batch')
+        .query({ since: '2026-01-01T00:00:00Z' })
+        .expect(200);
+
+      const got = body<BatchBody>(res);
+      expect(got.data).toHaveLength(2);
+      expect(got.pagination).toEqual({ next_cursor: null, has_more: false });
+    });
+
+    it('filters out rows modified before since', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/hcm/balances/batch')
+        .query({ since: '2026-06-01T00:00:00Z' })
+        .expect(200);
+
+      expect(body<BatchBody>(res).data).toHaveLength(0);
+    });
+
+    it('paginates with an opaque cursor across the timestamp tie', async () => {
+      const first = await request(app.getHttpServer())
+        .get('/hcm/balances/batch')
+        .query({ since: '2026-01-01T00:00:00Z', limit: 1 })
+        .expect(200);
+      const firstBody = body<BatchBody>(first);
+      expect(firstBody.data.map((r) => r.employee_id)).toEqual(['emp_001']);
+      expect(firstBody.pagination.has_more).toBe(true);
+      expect(firstBody.pagination.next_cursor).toBeTruthy();
+
+      const second = await request(app.getHttpServer())
+        .get('/hcm/balances/batch')
+        .query({
+          since: '2026-01-01T00:00:00Z',
+          limit: 1,
+          cursor: firstBody.pagination.next_cursor,
+        })
+        .expect(200);
+      const secondBody = body<BatchBody>(second);
+      expect(secondBody.data.map((r) => r.employee_id)).toEqual(['emp_002']);
+      expect(secondBody.pagination.has_more).toBe(false);
+      expect(secondBody.pagination.next_cursor).toBeNull();
+    });
+
+    it('returns 400 for a malformed cursor', async () => {
+      await request(app.getHttpServer())
+        .get('/hcm/balances/batch')
+        .query({ since: '2026-01-01T00:00:00Z', cursor: 'not-a-valid-cursor!!' })
+        .expect(400);
+    });
+
+    it('503s under the down scenario targeting batch', async () => {
+      await request(app.getHttpServer())
+        .post('/mock/control/scenarios')
+        .send({ endpoints: { batch: 'down' } })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .get('/hcm/balances/batch')
+        .query({ since: '2026-01-01T00:00:00Z' })
+        .expect(503);
+    });
+  });
+
+  describe('POST /mock/control/drift', () => {
+    it('changes total_days without advancing last_modified_at', async () => {
+      const before = body<StateBody>(
+        await request(app.getHttpServer()).get('/mock/control/state').expect(200),
+      ).storage.find((r) => r.employee_id === 'emp_001');
+
+      await request(app.getHttpServer())
+        .post('/mock/control/drift')
+        .send({ employee_id: 'emp_001', location_id: 'loc_001', total_days: 3 })
+        .expect(201);
+
+      const after = body<StateBody>(
+        await request(app.getHttpServer()).get('/mock/control/state').expect(200),
+      ).storage.find((r) => r.employee_id === 'emp_001');
+
+      expect(after?.total_days).toBe(3);
+      expect(after?.last_modified_at).toBe(before?.last_modified_at);
+    });
+
+    it('drift is invisible to the batch since filter', async () => {
+      await request(app.getHttpServer())
+        .post('/mock/control/drift')
+        .send({ employee_id: 'emp_001', location_id: 'loc_001', total_days: 3 })
+        .expect(201);
+
+      // since strictly after the (unchanged) last_modified_at: the drifted row
+      // must not appear, which is the whole point of drift (mock-hcm.md §3.3).
+      const res = await request(app.getHttpServer())
+        .get('/hcm/balances/batch')
+        .query({ since: '2026-02-01T00:00:00Z' })
+        .expect(200);
+
+      expect(body<BatchBody>(res).data.map((r) => r.employee_id)).not.toContain('emp_001');
+    });
+
+    it('returns 404 for an unknown pair', async () => {
+      await request(app.getHttpServer())
+        .post('/mock/control/drift')
+        .send({ employee_id: 'nobody', location_id: 'loc_001', total_days: 1 })
+        .expect(404);
     });
   });
 

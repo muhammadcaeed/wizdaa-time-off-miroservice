@@ -78,4 +78,43 @@ describe('BalanceRepository (version-check CAS)', () => {
     expect(after?.reservedDays).toBe(0);
     expect(after?.version).toBe(2);
   });
+
+  it('casReconcile sets absolute total/reserved, bumps version, stamps last_hcm_sync_at', async () => {
+    await repo.casReconcile(BAL_ID, 0, 18, 2, dataSource.manager);
+
+    const after = await repo.findByEmployeeAndLocation(EMP_ID, LOC_ID);
+    expect(after?.totalDays).toBe(18);
+    expect(after?.reservedDays).toBe(2);
+    expect(after?.version).toBe(1);
+    // null in the seed -> non-null proves the literal-value set actually wrote.
+    expect(after?.lastHcmSyncAt).not.toBeNull();
+  });
+
+  it('casReconcile throws OccConflictError when the observed version is stale', async () => {
+    await repo.casReconcile(BAL_ID, 0, 18, 2, dataSource.manager); // version is now 1
+
+    await expect(repo.casReconcile(BAL_ID, 0, 19, 1, dataSource.manager)).rejects.toBeInstanceOf(
+      OccConflictError,
+    );
+  });
+
+  it('casReconcileTotal sets absolute total only (TRD §9.7), leaves reserved untouched, bumps version', async () => {
+    await repo.casReserve(BAL_ID, 0, 4, dataSource.manager); // version 1, reserved 4
+
+    await repo.casReconcileTotal(BAL_ID, 1, 25, dataSource.manager);
+
+    const after = await repo.findByEmployeeAndLocation(EMP_ID, LOC_ID);
+    expect(after?.totalDays).toBe(25);
+    expect(after?.reservedDays).toBe(4); // §9.7 does NOT touch reserved
+    expect(after?.version).toBe(2);
+    expect(after?.lastHcmSyncAt).not.toBeNull();
+  });
+
+  it('casReconcileTotal throws OccConflictError when the observed version is stale', async () => {
+    await repo.casReconcileTotal(BAL_ID, 0, 18, dataSource.manager); // version is now 1
+
+    await expect(repo.casReconcileTotal(BAL_ID, 0, 19, dataSource.manager)).rejects.toBeInstanceOf(
+      OccConflictError,
+    );
+  });
 });
