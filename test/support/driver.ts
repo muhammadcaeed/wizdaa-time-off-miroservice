@@ -9,10 +9,23 @@ import type { Principal } from '../../apps/time-off-service/src/modules/auth/pri
 import { BalanceRepository } from '../../apps/time-off-service/src/modules/balances/balance.repository';
 import { CircuitBreaker } from '../../apps/time-off-service/src/modules/hcm-sync/circuit-breaker';
 import type { HcmAdjuster } from '../../apps/time-off-service/src/modules/hcm-sync/hcm-adjuster';
+import type { DriftDetectionService } from '../../apps/time-off-service/src/modules/reconciliation/drift-detection.service';
+import type { PointReconciliationQueue } from '../../apps/time-off-service/src/modules/reconciliation/point-reconciliation-queue';
 import { RequestRepository } from '../../apps/time-off-service/src/modules/time-off/request.repository';
 import { RequestService } from '../../apps/time-off-service/src/modules/time-off/request.service';
 import { ApprovalSagaService } from '../../apps/time-off-service/src/modules/time-off/sagas/approval-saga.service';
 import { createTestDataSource } from './db';
+
+/** No-op point queue: the property driver never exercises drift enqueue paths. */
+const noopQueue: PointReconciliationQueue = { enqueue: () => undefined };
+
+/**
+ * No-op drift detector: the property driver's HCM stub always confirms, so no
+ * drift fires. The cast erases the full {@link DriftDetectionService} surface —
+ * if a new method becomes load-bearing on this path, the property suite will
+ * throw at runtime, not compile time. Acceptable for this single-method stub.
+ */
+const noopDrift = { scheduleDriftCheck: () => undefined } as unknown as DriftDetectionService;
 
 /** An always-confirming HCM stub: returns exactly the expected post-total. */
 const confirmingHcm: HcmAdjuster = {
@@ -59,7 +72,17 @@ export class ApplicationDriver {
     const audit = new AuditService(new AuditRepository());
     const authz = new AuthorizationService(new EmployeeRepository(dataSource));
     const requestService = new RequestService(dataSource, balanceRepo, requestRepo, audit, authz);
-    const saga = new ApprovalSagaService(dataSource, balanceRepo, requestRepo, audit, authz, confirmingHcm, closedBreaker());
+    const saga = new ApprovalSagaService(
+      dataSource,
+      balanceRepo,
+      requestRepo,
+      audit,
+      authz,
+      confirmingHcm,
+      closedBreaker(),
+      noopQueue,
+      noopDrift,
+    );
 
     await dataSource.getRepository(Location).insert({ id: 'loc_0', name: 'HQ', countryCode: 'US' });
     await dataSource.getRepository(Employee).insert({

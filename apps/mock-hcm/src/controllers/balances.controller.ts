@@ -268,6 +268,16 @@ export class BalancesController {
       throw new NotFoundException(`Unknown balance for ${body.employee_id}:${body.location_id}`);
     }
 
+    // F-05 (REQ-SYNC-08): a real HCM rejects a decrement that would drive the
+    // balance negative with 409 insufficient_balance. The success-variant
+    // scenarios (ambiguous/unverifiable) deliberately bypass this so they can
+    // still exercise their 2xx arithmetic-mismatch paths.
+    const isSuccessVariant =
+      scenario === 'ambiguous-success' || scenario === 'unverifiable-success';
+    if (!isSuccessVariant && row.total_days + body.delta < 0) {
+      throw new ConflictException('insufficient_balance');
+    }
+
     const preTotal = row.total_days;
     let newTotal: number;
     switch (scenario) {

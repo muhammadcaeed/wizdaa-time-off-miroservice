@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, type EntityManager } from 'typeorm';
 import { AuditService } from '../../../common/audit/audit.service';
@@ -21,6 +21,11 @@ import {
   HcmTransportError,
 } from '../../hcm-sync/hcm.errors';
 import { BalanceRepository } from '../../balances/balance.repository';
+import { DriftDetectionService } from '../../reconciliation/drift-detection.service';
+import {
+  POINT_RECONCILIATION_QUEUE,
+  type PointReconciliationQueue,
+} from '../../reconciliation/point-reconciliation-queue';
 import { RequestRepository } from '../request.repository';
 import { toRequestResponse, type RequestResponse } from '../dto/request-response.dto';
 
@@ -49,6 +54,10 @@ export class ApprovalSagaService {
     private readonly authorization: AuthorizationService,
     @Inject(HCM_ADJUSTER) private readonly hcm: HcmAdjuster,
     private readonly breaker: CircuitBreaker,
+    @Inject(POINT_RECONCILIATION_QUEUE) private readonly pointQueue: PointReconciliationQueue,
+    // forwardRef: TimeOffModule <-> ReconciliationModule are mutually importing.
+    @Inject(forwardRef(() => DriftDetectionService))
+    private readonly driftDetection: DriftDetectionService,
   ) {}
 
   /**
@@ -125,7 +134,7 @@ export class ApprovalSagaService {
         hcm_correlation_id: verified.correlationId,
         outcome: 'confirmed',
       };
-      return await this.commit(
+      const committed = await this.commit(
         request.id,
         request.employeeId,
         request.locationId,
@@ -135,6 +144,21 @@ export class ApprovalSagaService {
         correlationId,
         hcmMeta,
       );
+      // Post-commit drift sanity check (REQ-SYNC-04a): only on a real APPROVED
+      // commit, never the deferred APPROVING path (no balance was committed
+      // there, so there is nothing to drift-check). Fire-and-forget: the queued
+      // read must not add latency to this 202 response.
+      if (committed.status === 'APPROVED') {
+        this.driftDetection.scheduleDriftCheck(
+          request.employeeId,
+          request.locationId,
+          'decrement',
+          preTotal + delta,
+          request.id,
+          correlationId,
+        );
+      }
+      return committed;
     } catch (err) {
       if (err instanceof HcmBreakerOpenError) {
         // The breaker OPENed mid-flight (concurrent failures or a lost
@@ -172,7 +196,7 @@ export class ApprovalSagaService {
           reason: err.reason,
           outcome: 'failed',
         };
-        return this.fail(
+        const failed = await this.fail(
           request.id,
           request.employeeId,
           request.locationId,
@@ -182,6 +206,23 @@ export class ApprovalSagaService {
           correlationId,
           hcmMeta,
         );
+        // After APPROVAL_FAILED commits, enqueue a targeted point recon for the
+        // two single-balance drift signals — F-05 (HCM 409 insufficient,
+        // REQ-SYNC-08) and F-04 (ambiguous adjust, REQ-SYNC-04). Transport /
+        // timeout / 5xx are retry+breaker territory, NOT drift, so they are not
+        // enqueued. A full batch reconciliation is deliberately NOT triggered
+        // for a single-balance event (REQ-SYNC-08).
+        if (
+          err instanceof HcmInsufficientBalanceError ||
+          err instanceof HcmArithmeticMismatchError
+        ) {
+          this.pointQueue.enqueue({
+            employeeId: request.employeeId,
+            locationId: request.locationId,
+            reason: err.reason,
+          });
+        }
+        return failed;
       }
       throw err;
     }
