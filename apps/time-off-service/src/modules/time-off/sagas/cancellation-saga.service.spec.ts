@@ -154,9 +154,19 @@ describe('CancellationSagaService (reverse saga T-09/10/11)', () => {
     expect(balance.totalDays).toBe(10); // 7 + 3 restored
     expect(balance.reservedDays).toBe(0); // CANCELLING held none — unchanged
 
-    const actions = (await dataSource.getRepository(AuditLog).find()).map((a) => a.action);
+    const rows = await dataSource.getRepository(AuditLog).find();
+    const actions = rows.map((a) => a.action);
     expect(actions).toContain('request.cancelled');
     expect(actions).toContain('hcm.increment.confirmed');
+
+    // The confirmed HCM audit carries the +increment forensics (pre 7, delta +3).
+    const hcmRow = rows.find((a) => a.action === 'hcm.increment.confirmed');
+    expect(hcmRow?.metadata).toMatchObject({
+      delta: 3,
+      expected_pre_total: 7,
+      new_total_days: 10,
+      outcome: 'confirmed',
+    });
 
     // REQ-SYNC-04a: success schedules an increment-direction post-commit drift check.
     expect(driftScheduled).toEqual([{ op: 'increment', committedTotal: 10 }]);

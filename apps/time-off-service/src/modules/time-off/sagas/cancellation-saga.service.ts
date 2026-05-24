@@ -4,6 +4,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, type EntityManager } from 'typeorm';
 import { AuditService } from '../../../common/audit/audit.service';
 import { BalanceNotFoundError } from '../../../common/errors/balance-not-found.error';
+import { RequestNotFoundError } from '../../../common/errors/request-not-found.error';
 import { OccConflictError } from '../../../common/persistence/occ-conflict.error';
 import { withOccRetry } from '../../../common/persistence/with-occ-retry';
 import { actorTypeOf, type Principal } from '../../auth/principal';
@@ -71,7 +72,9 @@ export class CancellationSagaService {
     const correlationId = randomUUID();
     const request = await this.requestRepository.findById(requestId);
     if (!request) {
-      throw new BalanceNotFoundError();
+      // Defensive only: the router pre-loaded and authorized this request before
+      // delegating, so a null here means it vanished between calls (or a misuse).
+      throw new RequestNotFoundError();
     }
 
     // Pre-gate: fast-fail 503 BEFORE the APPROVED→CANCELLING transition.
