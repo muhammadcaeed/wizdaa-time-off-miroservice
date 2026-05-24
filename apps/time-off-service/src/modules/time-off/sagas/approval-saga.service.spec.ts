@@ -19,6 +19,14 @@ import type {
 } from '../../reconciliation/point-reconciliation-queue';
 import { RequestRepository } from '../request.repository';
 import { ApprovalSagaService } from './approval-saga.service';
+import type { IdempotencyService } from '../idempotency.service';
+
+/** No-op idempotency stub for unit tests that don't exercise idempotency. */
+const noopIdempotency = {
+  check: () => Promise.resolve(null),
+  record: () => Promise.resolve(undefined),
+  cleanup: () => Promise.resolve(undefined),
+} as unknown as IdempotencyService;
 
 /**
  * @req REQ-LIFE-03
@@ -69,6 +77,7 @@ describe('ApprovalSagaService (forward saga T-02/03/04)', () => {
       breaker,
       queue,
       drift,
+      noopIdempotency,
     );
   }
 

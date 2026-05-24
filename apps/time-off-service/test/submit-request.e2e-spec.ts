@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { bearer } from '../../../test/support/auth';
 import { bootstrapE2E, type E2EContext } from '../../../test/support/e2e';
@@ -74,14 +75,51 @@ describe('POST /api/v1/requests (e2e)', () => {
     await request(ctx.httpServer)
       .post('/api/v1/requests')
       .set('Authorization', bearer('emp_001', ['EMPLOYEE']))
+      .set('Idempotency-Key', randomUUID())
       .send({ ...submit('emp_001', 1), sneaky: 'x' })
       .expect(400);
+  });
+
+  /**
+   * RFC 7807 validation error shape: POST with days_requested = -1 (below Min(1))
+   * must return a 400 with Content-Type application/problem+json and an errors[]
+   * array containing the field-level constraint message.
+   *
+   * @req REQ-ERR-03
+   */
+  it('returns RFC 7807 errors[] on validation failure (400)', async () => {
+    interface ProblemDetails {
+      type: string;
+      title: string;
+      status: number;
+      detail: string;
+      errors: Array<{ field: string; message: string }>;
+    }
+
+    const res = await request(ctx.httpServer)
+      .post('/api/v1/requests')
+      .set('Authorization', bearer('emp_001', ['EMPLOYEE']))
+      .set('Idempotency-Key', randomUUID())
+      .send({ ...submit('emp_001', 0) }) // days_requested: 0 violates @Min(1)
+      .expect(400);
+
+    const body = res.body as ProblemDetails;
+    expect(res.headers['content-type']).toMatch(/application\/problem\+json/);
+    expect(body.type).toBe('/errors/validation-error');
+    expect(body.title).toBe('ValidationError');
+    expect(body.status).toBe(400);
+    expect(body.detail).toBe('Request validation failed.');
+    expect(Array.isArray(body.errors)).toBe(true);
+    expect(body.errors.length).toBeGreaterThan(0);
+    const daysError = body.errors.find((e) => e.field === 'days_requested');
+    expect(daysError).toBeDefined();
   });
 
   it('creates a SUBMITTED request and reserves days (201)', async () => {
     const res = await request(ctx.httpServer)
       .post('/api/v1/requests')
       .set('Authorization', bearer('emp_001', ['EMPLOYEE']))
+      .set('Idempotency-Key', randomUUID())
       .send(submit('emp_001', 4))
       .expect(201);
 
@@ -95,6 +133,7 @@ describe('POST /api/v1/requests (e2e)', () => {
     await request(ctx.httpServer)
       .post('/api/v1/requests')
       .set('Authorization', bearer('emp_001', ['EMPLOYEE']))
+      .set('Idempotency-Key', randomUUID())
       .send(submit('emp_001', 100))
       .expect(409);
   });
@@ -104,6 +143,7 @@ describe('POST /api/v1/requests (e2e)', () => {
       request(ctx.httpServer)
         .post('/api/v1/requests')
         .set('Authorization', bearer('emp_r01', ['EMPLOYEE']))
+        .set('Idempotency-Key', randomUUID())
         .send(submit('emp_r01', 3));
 
     const results = await Promise.all([post(), post()]);

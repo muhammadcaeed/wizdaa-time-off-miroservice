@@ -13,9 +13,19 @@ import { actorTypeOf, type Principal } from '../auth/principal';
 import { BalanceRepository } from '../balances/balance.repository';
 import { InvalidTransitionError } from '../../common/errors/invalid-transition.error';
 import { RequestRepository } from './request.repository';
+import type { ListRequestsQuery } from './request.repository';
 import { CancellationSagaService } from './sagas/cancellation-saga.service';
 import { toRequestResponse, type RequestResponse } from './dto/request-response.dto';
+import type { RequestListResponse } from './dto/request-list-response.dto';
+import type { ListRequestsQueryDto } from './dto/list-requests-query.dto';
 import type { SubmitRequestDto } from './dto/submit-request.dto';
+import { IdempotencyService } from './idempotency.service';
+
+/** Idempotency context threaded from the interceptor into service methods. */
+export interface IdempotencyContext {
+  key: string;
+  hash: string;
+}
 
 /**
  * The result of routing a cancel (ADR-012). `accepted: true` means the request
@@ -53,14 +63,20 @@ export class RequestService {
     private readonly auditService: AuditService,
     private readonly authorization: AuthorizationService,
     private readonly cancellationSaga: CancellationSagaService,
+    private readonly idempotencyService: IdempotencyService,
   ) {}
 
   /**
    * Submits a new request for the authenticated employee.
+   * @param idem optional idempotency context (key + hash) threaded from the interceptor
    * @throws BalanceNotFoundError when no balance exists for the pair
    * @throws InsufficientBalanceError (409) when days exceed available, with no state change
    */
-  async submit(actor: Principal, dto: SubmitRequestDto): Promise<RequestResponse> {
+  async submit(
+    actor: Principal,
+    dto: SubmitRequestDto,
+    idem?: IdempotencyContext,
+  ): Promise<RequestResponse> {
     const employeeId = actor.sub;
     const requestId = randomUUID();
 
@@ -116,19 +132,80 @@ export class RequestService {
         );
 
         const created = await this.requestRepository.findById(requestId, manager);
-        return toRequestResponse(created!);
+        const response = toRequestResponse(created!);
+        if (idem) {
+          await this.idempotencyService.record(idem.key, idem.hash, 201, response, manager);
+        }
+        return response;
       }),
     );
   }
 
   /**
+   * Returns a single request by id with REQ-DEF-10 authz-indistinguishability:
+   * - EMPLOYEE: can only see own requests. If the request belongs to someone else,
+   *   or does not exist, throw ForbiddenError (same error either way — no leakage).
+   * - MANAGER/ADMIN: can see any request. If not found → RequestNotFoundError (404).
+   * @throws ForbiddenError (403) when an EMPLOYEE targets another employee's request
+   *   or a non-existent id (existence hiding, REQ-DEF-10)
+   * @throws RequestNotFoundError (404) when a MANAGER/ADMIN targets a missing id
+   */
+  async findById(actor: Principal, requestId: string): Promise<RequestResponse> {
+    const isEmployee = !actor.roles.includes('MANAGER') && !actor.roles.includes('ADMIN');
+    const request = await this.requestRepository.findById(requestId);
+
+    if (!request) {
+      // Admins/managers learn the resource is absent (true 404); employees get a
+      // 403 so they cannot probe for existence of other employees' requests (REQ-DEF-10).
+      throw this.authorization.canSeeExistence(actor)
+        ? new RequestNotFoundError()
+        : new ForbiddenError();
+    }
+
+    if (isEmployee && request.employeeId !== actor.sub) {
+      // Employee owns a valid id but it belongs to someone else — same 403 as above.
+      throw new ForbiddenError();
+    }
+
+    return toRequestResponse(request);
+  }
+
+  /**
+   * Lists requests newest-first with keyset cursor pagination (REQ-LIST-01).
+   * - EMPLOYEE: sees only their own requests.
+   * - MANAGER/ADMIN: sees all requests.
+   * @throws RequestCursorError (400) when the cursor is malformed
+   */
+  async list(actor: Principal, query: ListRequestsQueryDto): Promise<RequestListResponse> {
+    const isEmployee = !actor.roles.includes('MANAGER') && !actor.roles.includes('ADMIN');
+    const employeeId = isEmployee ? actor.sub : null;
+
+    const repoQuery: ListRequestsQuery = {
+      limit: query.limit,
+      cursor: query.cursor,
+      status: query.status,
+    };
+
+    const page = await this.requestRepository.list(employeeId, repoQuery);
+    return {
+      data: page.data.map(toRequestResponse),
+      pagination: page.pagination,
+    };
+  }
+
+  /**
    * Manager/admin rejects a SUBMITTED request (T-07): release the reservation,
    * transition to REJECTED, audit — all in one transaction. No HCM call.
+   * @param idem optional idempotency context threaded from the interceptor
    * @throws RequestNotFoundError (404) when the request does not exist
    * @throws ForbiddenError (403) when the actor is not the owner's manager/admin
    * @throws InvalidTransitionError (409) when the request is not SUBMITTED
    */
-  async reject(actor: Principal, requestId: string): Promise<RequestResponse> {
+  async reject(
+    actor: Principal,
+    requestId: string,
+    idem?: IdempotencyContext,
+  ): Promise<RequestResponse> {
     const request = await this.requestRepository.findById(requestId);
     if (!request) {
       // Hide existence from non-admins (REQ-DEF-10); admins get a true 404.
@@ -170,7 +247,11 @@ export class RequestService {
           manager,
         );
         const updated = await this.requestRepository.findById(requestId, manager);
-        return toRequestResponse(updated!);
+        const response = toRequestResponse(updated!);
+        if (idem) {
+          await this.idempotencyService.record(idem.key, idem.hash, 200, response, manager);
+        }
+        return response;
       }),
     );
   }
@@ -179,6 +260,7 @@ export class RequestService {
    * Routes a cancel by the request's current status (ADR-012). The status read is
    * advisory; each branch's status-CAS is the authoritative gate, so a concurrent
    * transition surfaces as a 409 rather than mis-routing. Owner or admin only.
+   * @param idem optional idempotency context threaded from the interceptor
    * @returns a {@link CancelOutcome}: `accepted: true` for the async saga path
    *   (APPROVED future-dated), `false` for a synchronous terminal transition
    * @throws RequestNotFoundError (404) / ForbiddenError (403) per existence-hiding
@@ -186,7 +268,11 @@ export class RequestService {
    *   APPROVED, or any other non-cancellable state
    * @throws HcmUnavailableError (503) when the saga breaker is OPEN (APPROVED path)
    */
-  async cancel(actor: Principal, requestId: string): Promise<CancelOutcome> {
+  async cancel(
+    actor: Principal,
+    requestId: string,
+    idem?: IdempotencyContext,
+  ): Promise<CancelOutcome> {
     const request = await this.requestRepository.findById(requestId);
     if (!request) {
       // Hide existence from non-admins (REQ-DEF-10); admins get a true 404.
@@ -202,24 +288,30 @@ export class RequestService {
     switch (request.status) {
       case 'SUBMITTED':
         // T-08, REQ-LIFE-08: release the local reservation, no HCM call.
+        // HTTP status 200 — synchronous terminal.
         return {
           accepted: false,
-          request: await this.releaseSubmitted(actor, request, correlationId),
+          request: await this.releaseSubmitted(actor, request, correlationId, idem),
         };
       case 'APPROVAL_FAILED':
         // T-06, REQ-LIFE-13: discard — no HCM, no balance change (the reservation
         // was already released by T-04). Audited as `request.discarded` (ADR-012).
+        // HTTP status 200 — synchronous terminal.
         return {
           accepted: false,
-          request: await this.discardFailed(actor, requestId, correlationId),
+          request: await this.discardFailed(actor, requestId, correlationId, idem),
         };
       case 'APPROVED':
         // T-09: only future-dated cancels run the reverse saga. Equal-to-today
         // counts as past and is not cancellable (TRD §5.3, REQ-LIFE-09).
+        // HTTP status 202 — accepted into the reverse saga.
         if (request.startDate <= todayUtc()) {
           throw new InvalidTransitionError(requestId);
         }
-        return { accepted: true, request: await this.cancellationSaga.execute(requestId, actor) };
+        return {
+          accepted: true,
+          request: await this.cancellationSaga.execute(requestId, actor, idem),
+        };
       default:
         // APPROVING/CANCELLING (R-05, REQ-LIFE-14) and terminal REJECTED/CANCELLED.
         throw new InvalidTransitionError(requestId);
@@ -231,6 +323,7 @@ export class RequestService {
     actor: Principal,
     request: { id: string; employeeId: string; locationId: string; daysRequested: number },
     correlationId: string,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
     const days = request.daysRequested;
     return withOccRetry(() =>
@@ -265,7 +358,11 @@ export class RequestService {
           manager,
         );
         const updated = await this.requestRepository.findById(request.id, manager);
-        return toRequestResponse(updated!);
+        const response = toRequestResponse(updated!);
+        if (idem) {
+          await this.idempotencyService.record(idem.key, idem.hash, 200, response, manager);
+        }
+        return response;
       }),
     );
   }
@@ -275,6 +372,7 @@ export class RequestService {
     actor: Principal,
     requestId: string,
     correlationId: string,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
     return this.dataSource.transaction(async (manager) => {
       await this.requestRepository.casStatus(
@@ -298,7 +396,11 @@ export class RequestService {
         manager,
       );
       const updated = await this.requestRepository.findById(requestId, manager);
-      return toRequestResponse(updated!);
+      const response = toRequestResponse(updated!);
+      if (idem) {
+        await this.idempotencyService.record(idem.key, idem.hash, 200, response, manager);
+      }
+      return response;
     });
   }
 }

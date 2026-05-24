@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, In, LessThan, type EntityManager } from 'typeorm';
 import { InvalidTransitionError } from '../../common/errors/invalid-transition.error';
+import { RequestCursorError } from '../../common/errors/request-cursor.error';
 import { TimeOffRequest } from '../../database/entities';
 import type { RequestStatus } from './request-state-machine';
 
@@ -26,6 +27,29 @@ export type RequestPatch = Partial<
 
 /** Request statuses whose `days_requested` count toward `Balance.reserved_days` (INV-03). */
 const RESERVING_STATUSES: readonly RequestStatus[] = ['SUBMITTED', 'APPROVING', 'CANCELLING'];
+
+/**
+ * Keyset cursor over the `(submitted_at, id)` sort key. `submitted_at` alone is
+ * not unique (two requests can share a millisecond on SQLite), so `id` is the
+ * tie-break that keeps the page boundary stable (api-contract.md §5).
+ */
+interface RequestListCursor {
+  submittedAt: string;
+  id: string;
+}
+
+/** Query options for {@link RequestRepository.list}. */
+export interface ListRequestsQuery {
+  limit?: number;
+  cursor?: string;
+  status?: string;
+}
+
+/** A page of requests plus the opaque cursor to resume after (api-contract.md §5). */
+export interface RequestPage {
+  data: TimeOffRequest[];
+  pagination: { next_cursor: string | null; has_more: boolean };
+}
 
 /**
  * Data access for {@link TimeOffRequest}. Status changes use a status-predicate
@@ -89,6 +113,105 @@ export class RequestRepository {
       ],
       order: { updatedAt: 'ASC' },
     });
+  }
+
+  /**
+   * Lists requests newest-first with opaque keyset cursor pagination (REQ-LIST-01,
+   * api-contract.md §5). The page is sorted by `(submitted_at DESC, id DESC)`;
+   * the cursor encodes the last row of the previous page so the next page resumes
+   * with the keyset predicate `(submitted_at, id) < (cursor)`. One extra row is
+   * fetched to compute `has_more` without a second COUNT query.
+   *
+   * The `submittedAt` cursor field is passed as a `Date` to TypeORM so it uses the
+   * same datetime transformer it used to store the column — a raw ISO string with
+   * `T`/`Z` would not match SQLite's stored `YYYY-MM-DD HH:MM:SS.SSS` format.
+   *
+   * @param employeeId the employee to scope to, or null for admin/all
+   * @param query `limit`, `cursor`, and optional `status` filter
+   * @param manager optional entity manager; defaults to the shared connection
+   * @returns the page rows plus the next cursor and a has-more flag
+   * @throws RequestCursorError when the cursor is malformed
+   */
+  async list(
+    employeeId: string | null,
+    query: ListRequestsQuery,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<RequestPage> {
+    const pageSize = query.limit ?? 20;
+    const qb = manager
+      .getRepository(TimeOffRequest)
+      .createQueryBuilder('r')
+      .orderBy('r.submitted_at', 'DESC')
+      .addOrderBy('r.id', 'DESC')
+      // Fetch one extra row: its presence is the has-more signal.
+      .take(pageSize + 1);
+
+    // Employee scope — null means admin sees everything.
+    if (employeeId !== null) {
+      qb.andWhere('r.employee_id = :employeeId', { employeeId });
+    }
+
+    // Optional status filter.
+    if (query.status !== undefined) {
+      qb.andWhere('r.status = :status', { status: query.status });
+    }
+
+    // Keyset cursor predicate — applied after scope and status filters so the
+    // cursor only navigates within the already-filtered set.
+    if (query.cursor !== undefined) {
+      const decoded = this.decodeRequestCursor(query.cursor);
+      // SQLite lacks row-value comparison in TypeORM's builder, so expand:
+      // submitted_at < c.submittedAt, OR equal submitted_at with a smaller id.
+      // The bound is passed as a Date so TypeORM serializes it with the same
+      // datetime transformer it used to store the column.
+      qb.andWhere(
+        '(r.submitted_at < :submittedAt) OR (r.submitted_at = :submittedAt AND r.id < :id)',
+        { submittedAt: new Date(decoded.submittedAt), id: decoded.id },
+      );
+    }
+
+    const rows = await qb.getMany();
+    const hasMore = rows.length > pageSize;
+    const data = hasMore ? rows.slice(0, pageSize) : rows;
+    const last = data[data.length - 1];
+    const nextCursor = hasMore && last ? this.encodeRequestCursor(last) : null;
+    return { data, pagination: { next_cursor: nextCursor, has_more: hasMore } };
+  }
+
+  /** Base64-encodes the `(submitted_at, id)` keyset of a row into an opaque cursor. */
+  private encodeRequestCursor(row: TimeOffRequest): string {
+    const payload: RequestListCursor = {
+      submittedAt:
+        row.submittedAt instanceof Date ? row.submittedAt.toISOString() : String(row.submittedAt),
+      id: row.id,
+    };
+    return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+  }
+
+  /** Decodes an opaque cursor back into its `(submitted_at, id)` keyset. */
+  private decodeRequestCursor(cursor: string): RequestListCursor {
+    try {
+      const parsed = JSON.parse(Buffer.from(cursor, 'base64').toString('utf8')) as unknown;
+      if (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        typeof (parsed as RequestListCursor).submittedAt === 'string' &&
+        typeof (parsed as RequestListCursor).id === 'string'
+      ) {
+        const cursorValue = parsed as RequestListCursor;
+        // A structurally-valid cursor can still carry a non-date submittedAt; an
+        // unparseable date would silently become an Invalid Date and corrupt the
+        // keyset predicate, so reject it as malformed like a JSON parse failure.
+        if (Number.isNaN(new Date(cursorValue.submittedAt).getTime())) {
+          throw new RequestCursorError();
+        }
+        return cursorValue;
+      }
+    } catch (err) {
+      if (err instanceof RequestCursorError) throw err;
+      // JSON parse or structural failure — fall through
+    }
+    throw new RequestCursorError();
   }
 
   /**

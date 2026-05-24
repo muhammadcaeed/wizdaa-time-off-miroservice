@@ -28,6 +28,8 @@ import {
 } from '../../reconciliation/point-reconciliation-queue';
 import { RequestRepository } from '../request.repository';
 import { toRequestResponse, type RequestResponse } from '../dto/request-response.dto';
+import type { IdempotencyContext } from '../request.service';
+import { IdempotencyService } from '../idempotency.service';
 
 /**
  * Forward approval saga (TRD §3.2 Flow B, §10.4). Three phases with the HCM call
@@ -58,10 +60,12 @@ export class ApprovalSagaService {
     // forwardRef: TimeOffModule <-> ReconciliationModule are mutually importing.
     @Inject(forwardRef(() => DriftDetectionService))
     private readonly driftDetection: DriftDetectionService,
+    private readonly idempotencyService: IdempotencyService,
   ) {}
 
   /**
    * Approves a SUBMITTED request as the acting manager/admin.
+   * @param idem optional idempotency context threaded from the interceptor
    * @returns the request in its terminal saga state (APPROVED or APPROVAL_FAILED),
    *   or APPROVING if the commit was deferred to the sweep
    * @throws RequestNotFoundError (404) when the request does not exist
@@ -71,7 +75,11 @@ export class ApprovalSagaService {
    *   request stays SUBMITTED, never entering a transient state (REQ-SYNC-06,
    *   REQ-DEF-07, TRD §11.2)
    */
-  async execute(requestId: string, actor: Principal): Promise<RequestResponse> {
+  async execute(
+    requestId: string,
+    actor: Principal,
+    idem?: IdempotencyContext,
+  ): Promise<RequestResponse> {
     const correlationId = randomUUID();
     const request = await this.requestRepository.findById(requestId);
     if (!request) {
@@ -144,6 +152,7 @@ export class ApprovalSagaService {
         verified.correlationId,
         correlationId,
         hcmMeta,
+        idem,
       );
       // Post-commit drift sanity check (REQ-SYNC-04a): only on a real APPROVED
       // commit, never the deferred APPROVING path (no balance was committed
@@ -184,6 +193,7 @@ export class ApprovalSagaService {
           new HcmTransportError('HCM breaker opened mid-flight'),
           correlationId,
           hcmMeta,
+          idem,
         );
       }
       if (err instanceof HcmError) {
@@ -206,6 +216,7 @@ export class ApprovalSagaService {
           err,
           correlationId,
           hcmMeta,
+          idem,
         );
         // After APPROVAL_FAILED commits, enqueue a targeted point recon for the
         // two single-balance drift signals — F-05 (HCM 409 insufficient,
@@ -275,6 +286,7 @@ export class ApprovalSagaService {
     hcmCorrelationId: string,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
     // R-04 fix (Plan 06): if a batch reconciliation has already absorbed the HCM
     // decrement between our OCC retries, the fresh balance total already equals
@@ -329,7 +341,12 @@ export class ApprovalSagaService {
             manager,
           );
           const updated = await this.requestRepository.findById(requestId, manager);
-          return toRequestResponse(updated!);
+          const response = toRequestResponse(updated!);
+          // 202 is the approve status code.
+          if (idem) {
+            await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+          }
+          return response;
         }),
       );
     } catch (err) {
@@ -339,7 +356,7 @@ export class ApprovalSagaService {
         // (Plan 06); never force a CAS-less write (R-04, TRD §11.1 F-06). Record
         // the confirmed HCM result so the sweep can finish the commit without a
         // second HCM round-trip if it chooses.
-        return this.deferCommit(requestId, correlationId, hcmMeta);
+        return this.deferCommit(requestId, correlationId, hcmMeta, idem);
       }
       throw err;
     }
@@ -355,6 +372,7 @@ export class ApprovalSagaService {
     error: HcmError,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
     return withOccRetry(() =>
       this.dataSource.transaction(async (manager) => {
@@ -391,7 +409,12 @@ export class ApprovalSagaService {
           manager,
         );
         const updated = await this.requestRepository.findById(requestId, manager);
-        return toRequestResponse(updated!);
+        const response = toRequestResponse(updated!);
+        // 202 is the approve endpoint status code even on APPROVAL_FAILED.
+        if (idem) {
+          await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+        }
+        return response;
       }),
     );
   }
@@ -400,9 +423,14 @@ export class ApprovalSagaService {
     requestId: string,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
-    await this.dataSource.transaction((manager) =>
-      this.auditService.record(
+    const current = await this.requestRepository.findById(requestId);
+    const response = toRequestResponse(current!);
+    // Record idempotency inside the deferred-commit audit transaction so a client
+    // replay returns the same APPROVING response without re-running the saga.
+    await this.dataSource.transaction(async (manager) => {
+      await this.auditService.record(
         {
           actorType: 'SYSTEM',
           entityType: 'REQUEST',
@@ -412,10 +440,13 @@ export class ApprovalSagaService {
           correlationId,
         },
         manager,
-      ),
-    );
-    const current = await this.requestRepository.findById(requestId);
-    return toRequestResponse(current!);
+      );
+      // 202 is the approve endpoint status code.
+      if (idem) {
+        await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+      }
+    });
+    return response;
   }
 
   /**

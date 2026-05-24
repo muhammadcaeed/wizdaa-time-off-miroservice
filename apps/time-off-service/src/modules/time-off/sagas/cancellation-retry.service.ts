@@ -27,6 +27,8 @@ import {
 } from '../../reconciliation/point-reconciliation-queue';
 import { RequestRepository } from '../request.repository';
 import { toRequestResponse, type RequestResponse } from '../dto/request-response.dto';
+import type { IdempotencyContext } from '../request.service';
+import { IdempotencyService } from '../idempotency.service';
 
 /**
  * Admin retry for a stuck CANCELLATION_FAILED request (T-12, TRD §5.2, REQ-LIFE-12).
@@ -63,10 +65,12 @@ export class CancellationRetryService {
     @Inject(POINT_RECONCILIATION_QUEUE) private readonly pointQueue: PointReconciliationQueue,
     @Inject(forwardRef(() => DriftDetectionService))
     private readonly driftDetection: DriftDetectionService,
+    private readonly idempotencyService: IdempotencyService,
   ) {}
 
   /**
    * Retries a stuck CANCELLATION_FAILED request as an admin (T-12).
+   * @param idem optional idempotency context threaded from the interceptor
    * @returns the request in its resulting state (CANCELLED, CANCELLATION_FAILED,
    *   or CANCELLING if the commit was deferred to the sweep)
    * @throws RequestNotFoundError (404) when the request does not exist
@@ -74,7 +78,11 @@ export class CancellationRetryService {
    * @throws HcmUnavailableError (503) when the breaker is OPEN at entry
    * @req REQ-LIFE-12
    */
-  async retry(requestId: string, actor: Principal): Promise<RequestResponse> {
+  async retry(
+    requestId: string,
+    actor: Principal,
+    idem?: IdempotencyContext,
+  ): Promise<RequestResponse> {
     const correlationId = randomUUID();
     const request = await this.requestRepository.findById(requestId);
     if (!request) {
@@ -144,6 +152,7 @@ export class CancellationRetryService {
         verified.correlationId,
         correlationId,
         hcmMeta,
+        idem,
       );
       if (committed.status === 'CANCELLED') {
         this.driftDetection.scheduleDriftCheck(
@@ -173,6 +182,7 @@ export class CancellationRetryService {
           new HcmTransportError('HCM breaker opened mid-flight'),
           correlationId,
           hcmMeta,
+          idem,
         );
       }
       if (err instanceof HcmError) {
@@ -187,7 +197,7 @@ export class CancellationRetryService {
           outcome: 'failed',
           retry: true,
         };
-        const failed = await this.fail(request.id, actor, err, correlationId, hcmMeta);
+        const failed = await this.fail(request.id, actor, err, correlationId, hcmMeta, idem);
         if (
           err instanceof HcmInsufficientBalanceError ||
           err instanceof HcmArithmeticMismatchError
@@ -260,6 +270,7 @@ export class CancellationRetryService {
     hcmCorrelationId: string,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
     const expectedPostTotal = preTotal + days;
     try {
@@ -307,12 +318,17 @@ export class CancellationRetryService {
             manager,
           );
           const updated = await this.requestRepository.findById(requestId, manager);
-          return toRequestResponse(updated!);
+          const response = toRequestResponse(updated!);
+          // 202 is the cancellation-retry endpoint status code.
+          if (idem) {
+            await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+          }
+          return response;
         }),
       );
     } catch (err) {
       if (err instanceof OccConflictError) {
-        return this.deferCommit(requestId, correlationId, hcmMeta);
+        return this.deferCommit(requestId, correlationId, hcmMeta, idem);
       }
       throw err;
     }
@@ -330,6 +346,7 @@ export class CancellationRetryService {
     error: HcmError,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
     return withOccRetry(() =>
       this.dataSource.transaction(async (manager) => {
@@ -364,7 +381,12 @@ export class CancellationRetryService {
           manager,
         );
         const updated = await this.requestRepository.findById(requestId, manager);
-        return toRequestResponse(updated!);
+        const response = toRequestResponse(updated!);
+        // 202 is the cancellation-retry endpoint status code.
+        if (idem) {
+          await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+        }
+        return response;
       }),
     );
   }
@@ -373,9 +395,12 @@ export class CancellationRetryService {
     requestId: string,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
-    await this.dataSource.transaction((manager) =>
-      this.auditService.record(
+    const current = await this.requestRepository.findById(requestId);
+    const response = toRequestResponse(current!);
+    await this.dataSource.transaction(async (manager) => {
+      await this.auditService.record(
         {
           actorType: 'SYSTEM',
           entityType: 'REQUEST',
@@ -385,10 +410,13 @@ export class CancellationRetryService {
           correlationId,
         },
         manager,
-      ),
-    );
-    const current = await this.requestRepository.findById(requestId);
-    return toRequestResponse(current!);
+      );
+      // 202 is the cancellation-retry endpoint status code.
+      if (idem) {
+        await this.idempotencyService.record(idem.key, idem.hash, 202, response, manager);
+      }
+    });
+    return response;
   }
 
   private async recordBreakerFastFail(

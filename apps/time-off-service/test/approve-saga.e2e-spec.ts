@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { bearer } from '../../../test/support/auth';
@@ -99,7 +100,8 @@ describe('POST /api/v1/requests/:id/approve (e2e)', () => {
   const approve = (reqId: string, sub: string, roles: ('EMPLOYEE' | 'MANAGER' | 'ADMIN')[]) =>
     request(ctx.httpServer)
       .post(`/api/v1/requests/${reqId}/approve`)
-      .set('Authorization', bearer(sub, roles));
+      .set('Authorization', bearer(sub, roles))
+      .set('Idempotency-Key', randomUUID());
 
   it('forbids a non-manager-of-owner (403, REQ-LIFE-15)', async () => {
     await approve('req_emp_x', 'mgr_999', ['MANAGER']).expect(403);

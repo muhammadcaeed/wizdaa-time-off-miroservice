@@ -13,9 +13,17 @@ import type { DriftDetectionService } from '../../apps/time-off-service/src/modu
 import type { PointReconciliationQueue } from '../../apps/time-off-service/src/modules/reconciliation/point-reconciliation-queue';
 import { RequestRepository } from '../../apps/time-off-service/src/modules/time-off/request.repository';
 import { RequestService } from '../../apps/time-off-service/src/modules/time-off/request.service';
+import type { IdempotencyService } from '../../apps/time-off-service/src/modules/time-off/idempotency.service';
 import { ApprovalSagaService } from '../../apps/time-off-service/src/modules/time-off/sagas/approval-saga.service';
 import { CancellationSagaService } from '../../apps/time-off-service/src/modules/time-off/sagas/cancellation-saga.service';
 import { createTestDataSource } from './db';
+
+/** No-op idempotency stub for property tests that don't exercise idempotency. */
+const noopIdempotency = {
+  check: () => Promise.resolve(null),
+  record: () => Promise.resolve(undefined),
+  cleanup: () => Promise.resolve(undefined),
+} as unknown as IdempotencyService;
 
 /** No-op point queue: the property driver never exercises drift enqueue paths. */
 const noopQueue: PointReconciliationQueue = { enqueue: () => undefined };
@@ -81,6 +89,7 @@ export class ApplicationDriver {
       closedBreaker(),
       noopQueue,
       noopDrift,
+      noopIdempotency,
     );
     const requestService = new RequestService(
       dataSource,
@@ -89,6 +98,7 @@ export class ApplicationDriver {
       audit,
       authz,
       cancellationSaga,
+      noopIdempotency,
     );
     const saga = new ApprovalSagaService(
       dataSource,
@@ -100,6 +110,7 @@ export class ApplicationDriver {
       closedBreaker(),
       noopQueue,
       noopDrift,
+      noopIdempotency,
     );
 
     await dataSource.getRepository(Location).insert({ id: 'loc_0', name: 'HQ', countryCode: 'US' });

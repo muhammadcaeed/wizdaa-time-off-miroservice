@@ -1,16 +1,41 @@
-import { Body, Controller, HttpCode, Param, Post, Res } from '@nestjs/common';
-import type { Response } from 'express';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Query,
+  Req,
+  Res,
+  UseInterceptors,
+} from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { Principal } from '../auth/principal';
 import { Roles } from '../auth/roles.decorator';
-import { RequestService } from './request.service';
+import { IdempotencyInterceptor } from './idempotency.interceptor';
+import { RequestService, type IdempotencyContext } from './request.service';
 import { ApprovalSagaService } from './sagas/approval-saga.service';
 import { ApprovalRetryService } from './sagas/approval-retry.service';
 import { CancellationRetryService } from './sagas/cancellation-retry.service';
 import type { RequestResponse } from './dto/request-response.dto';
+import type { RequestListResponse } from './dto/request-list-response.dto';
+import { ListRequestsQueryDto } from './dto/list-requests-query.dto';
 import { SubmitRequestDto } from './dto/submit-request.dto';
 
+/** Extracts idempotency context set by the interceptor onto the request object. */
+function idemFrom(
+  req: Request & { idempotencyKey?: string; idempotencyHash?: string },
+): IdempotencyContext | undefined {
+  if (req.idempotencyKey && req.idempotencyHash) {
+    return { key: req.idempotencyKey, hash: req.idempotencyHash };
+  }
+  return undefined;
+}
+
 /** Time-off request lifecycle endpoints (api-contract.md §2). */
+@UseInterceptors(IdempotencyInterceptor)
 @Controller('requests')
 export class TimeOffController {
   constructor(
@@ -25,14 +50,52 @@ export class TimeOffController {
    * with the SUBMITTED request.
    * @param dto the validated submission payload
    * @param actor the verified caller (owner = `actor.sub`)
+   * @param req the Express request (carries idempotency context from the interceptor)
    * @throws InsufficientBalanceError (409) when days exceed available balance
    */
   @Post()
   async submit(
     @Body() dto: SubmitRequestDto,
     @CurrentUser() actor: Principal,
+    @Req() req: Request,
   ): Promise<RequestResponse> {
-    return this.requestService.submit(actor, dto);
+    return this.requestService.submit(
+      actor,
+      dto,
+      idemFrom(req as Request & { idempotencyKey?: string; idempotencyHash?: string }),
+    );
+  }
+
+  /**
+   * Returns a paginated list of requests (REQ-LIST-01). EMPLOYEE sees only their
+   * own requests; MANAGER/ADMIN sees all. Sorted newest-first `(submitted_at, id)`.
+   * @param query optional `limit`, `cursor`, and `status` filter
+   * @param actor the verified caller
+   * @throws RequestCursorError (400) when the cursor is malformed
+   */
+  @Get()
+  async list(
+    @Query() query: ListRequestsQueryDto,
+    @CurrentUser() actor: Principal,
+  ): Promise<RequestListResponse> {
+    return this.requestService.list(actor, query);
+  }
+
+  /**
+   * Returns a single request by id (REQ-DEF-10). EMPLOYEE may only view their own
+   * request — a non-owner or non-existent id returns 403 (existence hiding).
+   * MANAGER/ADMIN may view any request; a missing id returns 404.
+   * @param id the request id
+   * @param actor the verified caller
+   * @throws ForbiddenError (403) when an EMPLOYEE targets another employee or non-existent id
+   * @throws RequestNotFoundError (404) when a MANAGER/ADMIN targets a missing id
+   */
+  @Get(':id')
+  async findById(
+    @Param('id') id: string,
+    @CurrentUser() actor: Principal,
+  ): Promise<RequestResponse> {
+    return this.requestService.findById(actor, id);
   }
 
   /**
@@ -40,6 +103,7 @@ export class TimeOffController {
    * inline and returns 202 with the request in its resulting state.
    * @param id the request id
    * @param actor the acting manager/admin
+   * @param req the Express request (carries idempotency context from the interceptor)
    * @throws RequestNotFoundError (404), ForbiddenError (403), InvalidTransitionError (409)
    */
   @Post(':id/approve')
@@ -48,20 +112,34 @@ export class TimeOffController {
   async approve(
     @Param('id') id: string,
     @CurrentUser() actor: Principal,
+    @Req() req: Request,
   ): Promise<RequestResponse> {
-    return this.approvalSaga.execute(id, actor);
+    return this.approvalSaga.execute(
+      id,
+      actor,
+      idemFrom(req as Request & { idempotencyKey?: string; idempotencyHash?: string }),
+    );
   }
 
   /**
    * Manager/admin rejects a SUBMITTED request (T-07). Synchronous, no HCM call;
    * returns 200 with the REJECTED request.
+   * @param req the Express request (carries idempotency context from the interceptor)
    * @throws RequestNotFoundError (404), ForbiddenError (403), InvalidTransitionError (409)
    */
   @Post(':id/reject')
   @Roles('MANAGER', 'ADMIN')
   @HttpCode(200)
-  async reject(@Param('id') id: string, @CurrentUser() actor: Principal): Promise<RequestResponse> {
-    return this.requestService.reject(actor, id);
+  async reject(
+    @Param('id') id: string,
+    @CurrentUser() actor: Principal,
+    @Req() req: Request,
+  ): Promise<RequestResponse> {
+    return this.requestService.reject(
+      actor,
+      id,
+      idemFrom(req as Request & { idempotencyKey?: string; idempotencyHash?: string }),
+    );
   }
 
   /**
@@ -84,8 +162,13 @@ export class TimeOffController {
     @Param('id') id: string,
     @CurrentUser() actor: Principal,
     @Res({ passthrough: true }) res: Response,
+    @Req() req: Request,
   ): Promise<RequestResponse> {
-    const outcome = await this.requestService.cancel(actor, id);
+    const outcome = await this.requestService.cancel(
+      actor,
+      id,
+      idemFrom(req as Request & { idempotencyKey?: string; idempotencyHash?: string }),
+    );
     res.status(outcome.accepted ? 202 : 200);
     return outcome.request;
   }
@@ -105,8 +188,13 @@ export class TimeOffController {
   async retryApproval(
     @Param('id') id: string,
     @CurrentUser() actor: Principal,
+    @Req() req: Request,
   ): Promise<RequestResponse> {
-    return this.approvalRetry.retry(id, actor);
+    return this.approvalRetry.retry(
+      id,
+      actor,
+      idemFrom(req as Request & { idempotencyKey?: string; idempotencyHash?: string }),
+    );
   }
 
   /**
@@ -124,7 +212,12 @@ export class TimeOffController {
   async retryCancellation(
     @Param('id') id: string,
     @CurrentUser() actor: Principal,
+    @Req() req: Request,
   ): Promise<RequestResponse> {
-    return this.cancellationRetry.retry(id, actor);
+    return this.cancellationRetry.retry(
+      id,
+      actor,
+      idemFrom(req as Request & { idempotencyKey?: string; idempotencyHash?: string }),
+    );
   }
 }
