@@ -6,6 +6,8 @@ import { CircuitBreaker, type CircuitBreakerConfig } from './circuit-breaker';
 import { HcmAdminController } from './hcm-admin.controller';
 import { HCM_ADJUSTER } from './hcm-adjuster';
 import { HcmClient } from './hcm-client';
+import { HCM_READER } from './hcm-reader';
+import { HcmReaderClient } from './hcm-reader-client';
 import { ResilientHcmAdjuster } from './resilient-hcm-adjuster';
 import type { RetryPolicy, Rng } from './retry-policy';
 
@@ -61,7 +63,19 @@ const defaultSleep = (ms: number): Promise<void> =>
         return new ResilientHcmAdjuster(client, breaker, policy, defaultRng, defaultSleep, logger);
       },
     },
+    {
+      // Plain typed read client (TRD §9.1). Deliberately NOT breaker-wrapped:
+      // breaker-gating of reads is the consumer's responsibility (a later
+      // sub-task), so the reader stays a thin client here.
+      provide: HCM_READER,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService): HcmReaderClient =>
+        new HcmReaderClient(
+          config.getOrThrow<string>('HCM_BASE_URL'),
+          config.getOrThrow<number>('HCM_TIMEOUT_MS'),
+        ),
+    },
   ],
-  exports: [HCM_ADJUSTER, CircuitBreaker],
+  exports: [HCM_ADJUSTER, HCM_READER, CircuitBreaker],
 })
 export class HcmSyncModule {}
