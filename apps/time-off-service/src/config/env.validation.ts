@@ -51,6 +51,9 @@ export const envValidationSchema = Joi.object({
   THROTTLE_PER_IP_PER_MIN: Joi.number().positive().default(60),
   THROTTLE_PER_SUB_PER_MIN: Joi.number().positive().default(120),
 
+  // Idempotency (Cycle 07)
+  IDEMPOTENCY_TTL_HOURS: Joi.number().integer().min(1).default(24),
+
   // Mock HCM (test/dev only)
   MOCK_HCM_PORT: Joi.number().port().default(4001),
   MOCK_HCM_FIXTURE_PATH: Joi.string().default(''),

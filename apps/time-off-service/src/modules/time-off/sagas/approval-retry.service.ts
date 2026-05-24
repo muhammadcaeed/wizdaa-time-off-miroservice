@@ -28,6 +28,8 @@ import {
 } from '../../reconciliation/point-reconciliation-queue';
 import { RequestRepository } from '../request.repository';
 import { toRequestResponse, type RequestResponse } from '../dto/request-response.dto';
+import type { IdempotencyContext } from '../request.service';
+import { IdempotencyService } from '../idempotency.service';
 
 /**
  * Admin retry for a stuck APPROVAL_FAILED request (T-05, TRD §5.2, REQ-LIFE-06).
@@ -64,10 +66,12 @@ export class ApprovalRetryService {
     @Inject(POINT_RECONCILIATION_QUEUE) private readonly pointQueue: PointReconciliationQueue,
     @Inject(forwardRef(() => DriftDetectionService))
     private readonly driftDetection: DriftDetectionService,
+    private readonly idempotencyService: IdempotencyService,
   ) {}
 
   /**
    * Retries a stuck APPROVAL_FAILED request as an admin (T-05).
+   * @param idem optional idempotency context threaded from the interceptor
    * @returns the request in its resulting state (APPROVED, APPROVAL_FAILED, or
    *   APPROVING if the commit was deferred to the sweep)
    * @throws RequestNotFoundError (404) when the request does not exist
@@ -76,7 +80,11 @@ export class ApprovalRetryService {
    * @throws HcmUnavailableError (503) when the breaker is OPEN at entry
    * @req REQ-LIFE-06
    */
-  async retry(requestId: string, actor: Principal): Promise<RequestResponse> {
+  async retry(
+    requestId: string,
+    actor: Principal,
+    idem?: IdempotencyContext,
+  ): Promise<RequestResponse> {
     const correlationId = randomUUID();
     const request = await this.requestRepository.findById(requestId);
     if (!request) {
@@ -148,6 +156,7 @@ export class ApprovalRetryService {
         verified.correlationId,
         correlationId,
         hcmMeta,
+        idem,
       );
       if (committed.status === 'APPROVED') {
         this.driftDetection.scheduleDriftCheck(
@@ -180,6 +189,7 @@ export class ApprovalRetryService {
           new HcmTransportError('HCM breaker opened mid-flight'),
           correlationId,
           hcmMeta,
+          idem,
         );
       }
       if (err instanceof HcmError) {
@@ -203,6 +213,7 @@ export class ApprovalRetryService {
           err,
           correlationId,
           hcmMeta,
+          idem,
         );
         if (
           err instanceof HcmInsufficientBalanceError ||
@@ -285,6 +296,7 @@ export class ApprovalRetryService {
     hcmCorrelationId: string,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
     const expectedPostTotal = preTotal + -days; // preTotal - days
     try {
@@ -332,12 +344,15 @@ export class ApprovalRetryService {
             manager,
           );
           const updated = await this.requestRepository.findById(requestId, manager);
-          return toRequestResponse(updated!);
+          const response = toRequestResponse(updated!);
+          // 202 is the approval-retry endpoint status code.
+          await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+          return response;
         }),
       );
     } catch (err) {
       if (err instanceof OccConflictError) {
-        return this.deferCommit(requestId, correlationId, hcmMeta);
+        return this.deferCommit(requestId, correlationId, hcmMeta, idem);
       }
       throw err;
     }
@@ -355,6 +370,7 @@ export class ApprovalRetryService {
     error: HcmError,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
     return withOccRetry(() =>
       this.dataSource.transaction(async (manager) => {
@@ -391,7 +407,10 @@ export class ApprovalRetryService {
           manager,
         );
         const updated = await this.requestRepository.findById(requestId, manager);
-        return toRequestResponse(updated!);
+        const response = toRequestResponse(updated!);
+        // 202 is the approval-retry endpoint status code.
+        await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+        return response;
       }),
     );
   }
@@ -400,9 +419,12 @@ export class ApprovalRetryService {
     requestId: string,
     correlationId: string,
     hcmMeta: Record<string, unknown>,
+    idem?: IdempotencyContext,
   ): Promise<RequestResponse> {
-    await this.dataSource.transaction((manager) =>
-      this.auditService.record(
+    const current = await this.requestRepository.findById(requestId);
+    const response = toRequestResponse(current!);
+    await this.dataSource.transaction(async (manager) => {
+      await this.auditService.record(
         {
           actorType: 'SYSTEM',
           entityType: 'REQUEST',
@@ -412,10 +434,11 @@ export class ApprovalRetryService {
           correlationId,
         },
         manager,
-      ),
-    );
-    const current = await this.requestRepository.findById(requestId);
-    return toRequestResponse(current!);
+      );
+      // 202 is the approval-retry endpoint status code.
+      await this.idempotencyService.record(idem?.key, idem?.hash ?? '', 202, response, manager);
+    });
+    return response;
   }
 
   private async recordBreakerFastFail(

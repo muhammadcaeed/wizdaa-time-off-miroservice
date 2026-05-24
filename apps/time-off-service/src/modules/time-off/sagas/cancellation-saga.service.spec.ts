@@ -17,6 +17,14 @@ import type {
 } from '../../reconciliation/point-reconciliation-queue';
 import { RequestRepository } from '../request.repository';
 import { CancellationSagaService } from './cancellation-saga.service';
+import type { IdempotencyService } from '../idempotency.service';
+
+/** No-op idempotency stub for unit tests that don't exercise idempotency. */
+const noopIdempotency = {
+  check: () => Promise.resolve(null),
+  record: () => Promise.resolve(undefined),
+  cleanup: () => Promise.resolve(undefined),
+} as unknown as IdempotencyService;
 
 /**
  * @req REQ-LIFE-09
@@ -65,6 +73,7 @@ describe('CancellationSagaService (reverse saga T-09/10/11)', () => {
       breaker,
       queue,
       drift,
+      noopIdempotency,
     );
   }
 

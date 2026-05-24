@@ -11,6 +11,14 @@ import { BalanceRepository } from '../balances/balance.repository';
 import { RequestRepository } from './request.repository';
 import { RequestService } from './request.service';
 import type { CancellationSagaService } from './sagas/cancellation-saga.service';
+import type { IdempotencyService } from './idempotency.service';
+
+/** No-op idempotency stub for unit tests that don't exercise idempotency. */
+const noopIdempotency = {
+  check: () => Promise.resolve(null),
+  record: () => Promise.resolve(undefined),
+  cleanup: () => Promise.resolve(undefined),
+} as unknown as IdempotencyService;
 
 /**
  * @req REQ-LIFE-07
@@ -32,6 +40,7 @@ describe('RequestService.reject (T-07)', () => {
       new AuthorizationService(new EmployeeRepository(dataSource)),
       // reject never routes to the cancellation saga; a never-called stub.
       undefined as unknown as CancellationSagaService,
+      noopIdempotency,
     );
     await dataSource.getRepository(Employee).insert({
       id: 'emp_001',

@@ -12,6 +12,14 @@ import { RequestRepository } from './request.repository';
 import { RequestService } from './request.service';
 import type { CancellationSagaService } from './sagas/cancellation-saga.service';
 import type { SubmitRequestDto } from './dto/submit-request.dto';
+import type { IdempotencyService } from './idempotency.service';
+
+/** No-op idempotency stub for unit tests that don't exercise idempotency. */
+const noopIdempotency = {
+  check: () => Promise.resolve(null),
+  record: () => Promise.resolve(undefined),
+  cleanup: () => Promise.resolve(undefined),
+} as unknown as IdempotencyService;
 
 /**
  * @req REQ-LIFE-01
@@ -42,6 +50,7 @@ describe('RequestService.submit (T-01 reservation)', () => {
       // submit never routes to the cancellation saga; a never-called stub keeps
       // this spec focused on T-01.
       undefined as unknown as CancellationSagaService,
+      noopIdempotency,
     );
     await dataSource.getRepository(Balance).insert({
       id: 'bal_001',
