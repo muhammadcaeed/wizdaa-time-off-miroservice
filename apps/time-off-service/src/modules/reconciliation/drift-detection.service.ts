@@ -70,7 +70,9 @@ export class DriftDetectionService {
           await this.check(employeeId, locationId, op, committedTotal, requestId, correlationId);
         } catch (err) {
           // Swallow: the saga response is already sent; the batch reconciler is the backstop.
-          this.logger.error({ err, employeeId, locationId, op }, 'post-commit drift check failed');
+          // Surrogate keys only (REQ-DEF-09): correlationId locates the flow; the
+          // raw employee/location ids belong to AuditLog rows, never the log.
+          this.logger.error({ err, correlationId, op }, 'post-commit drift check failed');
         } finally {
           this.inFlight.delete(work);
           resolve();
@@ -100,8 +102,9 @@ export class DriftDetectionService {
     correlationId: string,
   ): Promise<void> {
     if (this.breaker.isHardOpen()) {
+      // Surrogate keys only (REQ-DEF-09): correlationId + op, not the raw ids.
       this.logger.info(
-        { event: 'drift.skipped_breaker_open', employeeId, locationId },
+        { event: 'drift.skipped_breaker_open', correlationId, op },
         'breaker OPEN; skipping post-commit drift check (batch backstop)',
       );
       return;
@@ -130,6 +133,6 @@ export class DriftDetectionService {
         manager,
       ),
     );
-    this.pointQueue.enqueue({ employeeId, locationId, reason: DRIFT_REASON });
+    this.pointQueue.enqueue({ employeeId, locationId, reason: DRIFT_REASON, correlationId });
   }
 }
