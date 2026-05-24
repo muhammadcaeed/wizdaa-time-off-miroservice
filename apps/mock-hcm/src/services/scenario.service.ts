@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
 /** Endpoints whose behavior can be overridden by a scenario. */
-export type EndpointName = 'adjust' | 'get_balance';
+export type EndpointName = 'adjust' | 'get_balance' | 'batch';
 
 /**
  * Scenarios supported by the mock (mock-hcm.md §4). Cycle 02 added the
