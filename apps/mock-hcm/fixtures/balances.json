@@ -1,0 +1,14 @@
+[
+  {
+    "employee_id": "emp_001",
+    "location_id": "loc_001",
+    "total_days": 20,
+    "last_modified_at": "2026-01-01T00:00:00Z"
+  },
+  {
+    "employee_id": "emp_002",
+    "location_id": "loc_001",
+    "total_days": 15,
+    "last_modified_at": "2026-01-01T00:00:00Z"
+  }
+]
