@@ -1,4 +1,4 @@
-import { Body, Controller, HttpCode, Param, Post, Res } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { Principal } from '../auth/principal';
@@ -8,6 +8,8 @@ import { ApprovalSagaService } from './sagas/approval-saga.service';
 import { ApprovalRetryService } from './sagas/approval-retry.service';
 import { CancellationRetryService } from './sagas/cancellation-retry.service';
 import type { RequestResponse } from './dto/request-response.dto';
+import type { RequestListResponse } from './dto/request-list-response.dto';
+import { ListRequestsQueryDto } from './dto/list-requests-query.dto';
 import { SubmitRequestDto } from './dto/submit-request.dto';
 
 /** Time-off request lifecycle endpoints (api-contract.md §2). */
@@ -33,6 +35,38 @@ export class TimeOffController {
     @CurrentUser() actor: Principal,
   ): Promise<RequestResponse> {
     return this.requestService.submit(actor, dto);
+  }
+
+  /**
+   * Returns a paginated list of requests (REQ-LIST-01). EMPLOYEE sees only their
+   * own requests; MANAGER/ADMIN sees all. Sorted newest-first `(submitted_at, id)`.
+   * @param query optional `limit`, `cursor`, and `status` filter
+   * @param actor the verified caller
+   * @throws RequestCursorError (400) when the cursor is malformed
+   */
+  @Get()
+  async list(
+    @Query() query: ListRequestsQueryDto,
+    @CurrentUser() actor: Principal,
+  ): Promise<RequestListResponse> {
+    return this.requestService.list(actor, query);
+  }
+
+  /**
+   * Returns a single request by id (REQ-DEF-10). EMPLOYEE may only view their own
+   * request — a non-owner or non-existent id returns 403 (existence hiding).
+   * MANAGER/ADMIN may view any request; a missing id returns 404.
+   * @param id the request id
+   * @param actor the verified caller
+   * @throws ForbiddenError (403) when an EMPLOYEE targets another employee or non-existent id
+   * @throws RequestNotFoundError (404) when a MANAGER/ADMIN targets a missing id
+   */
+  @Get(':id')
+  async findById(
+    @Param('id') id: string,
+    @CurrentUser() actor: Principal,
+  ): Promise<RequestResponse> {
+    return this.requestService.findById(actor, id);
   }
 
   /**
