@@ -3,8 +3,19 @@ import { Injectable } from '@nestjs/common';
 /** Endpoints whose behavior can be overridden by a scenario. */
 export type EndpointName = 'adjust' | 'get_balance';
 
-/** Scenarios supported in cycle 02 (mock-hcm.md §4). */
-export type ScenarioName = 'normal' | 'ambiguous-success' | 'unverifiable-success';
+/**
+ * Scenarios supported by the mock (mock-hcm.md §4). Cycle 02 added the
+ * ambiguous/unverifiable success variants; cycle 03 adds the chaos failure
+ * injectors (`slow`, `flaky`, `down`, `network-failure`).
+ */
+export type ScenarioName =
+  | 'normal'
+  | 'ambiguous-success'
+  | 'unverifiable-success'
+  | 'slow'
+  | 'flaky'
+  | 'down'
+  | 'network-failure';
 
 /** Optional filter narrowing a scenario to a subset of operations. */
 export interface ScenarioScope {
@@ -28,6 +39,9 @@ const DEFAULT_SCENARIO: ScenarioName = 'normal';
 @Injectable()
 export class ScenarioService {
   private assignments: ScenarioAssignment[] = [];
+
+  /** Per-endpoint call counter backing the deterministic `flaky` scenario. */
+  private flakyCounters = new Map<EndpointName, number>();
 
   /**
    * Records a scenario assignment. Later assignments take precedence over
@@ -72,6 +86,30 @@ export class ScenarioService {
    */
   reset(): void {
     this.assignments = [];
+    this.flakyCounters.clear();
+  }
+
+  /**
+   * Decides, deterministically, whether the next `flaky` call should fail.
+   *
+   * Counter-based rather than `Math.random` so the chaos suite is
+   * reproducible (mock-hcm.md §4). We fail every Nth call where
+   * `N = round(1 / fail_rate)`: `fail_rate=0.5` fails every 2nd call,
+   * `fail_rate=0.34` fails every 3rd. The counter is per-endpoint and is
+   * reset by {@link reset}.
+   *
+   * @param endpoint the endpoint being exercised
+   * @param failRate desired failure fraction in (0, 1]
+   * @returns true when this call should be failed with a 5xx
+   */
+  shouldFlakyFail(endpoint: EndpointName, failRate: number): boolean {
+    const next = (this.flakyCounters.get(endpoint) ?? 0) + 1;
+    this.flakyCounters.set(endpoint, next);
+    if (failRate <= 0) {
+      return false;
+    }
+    const period = Math.max(1, Math.round(1 / failRate));
+    return next % period === 0;
   }
 
   /**

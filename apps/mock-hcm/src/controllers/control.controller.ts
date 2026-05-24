@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
 import { InjectBalanceDto, SetScenarioDto } from '../dto/control.dto';
+import { type CallLogEntry, CallLogService } from '../services/call-log.service';
 import { IdempotencyService } from '../services/idempotency.service';
 import { type ScenarioAssignment, ScenarioService } from '../services/scenario.service';
 import { type BalanceRow, StorageService } from '../services/storage.service';
@@ -21,6 +22,7 @@ export class ControlController {
     private readonly storage: StorageService,
     private readonly scenarios: ScenarioService,
     private readonly idempotency: IdempotencyService,
+    private readonly callLog: CallLogService,
   ) {}
 
   /**
@@ -33,6 +35,7 @@ export class ControlController {
     this.storage.reset();
     this.scenarios.reset();
     this.idempotency.reset();
+    this.callLog.reset();
   }
 
   /**
@@ -71,5 +74,15 @@ export class ControlController {
       storage: this.storage.snapshot(),
       idempotencyKeys: this.idempotency.keys(),
     };
+  }
+
+  /**
+   * Returns the recent HCM-surface call log (mock-hcm.md §3.6), used by
+   * contract and chaos tests to assert what the client sent on each attempt.
+   * @returns the recorded calls, oldest first
+   */
+  @Get('calls')
+  calls(): { calls: CallLogEntry[] } {
+    return { calls: this.callLog.list() };
   }
 }

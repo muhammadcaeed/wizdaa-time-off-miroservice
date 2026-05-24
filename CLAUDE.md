@@ -2,21 +2,12 @@
 
 NestJS + TypeScript + SQLite. Coordinates time-off with an external HCM. HCM is the source of truth; this service mirrors and reconciles defensively.
 
-Full spec: `docs/TRD.md`. Implementation plan: `docs/PLAN.md`. Read both before any code.
+## Read first
 
-## Commands
+Open the relevant document before designing or coding in that area:
 
-```bash
-npm run start:dev          # Dev server, watch
-npm run start:mock-hcm     # Mock HCM
-npm test                   # Vitest unit + integration
-npm run test:e2e           # Supertest e2e
-npm run test:cov           # Coverage report
-npm run lint               # ESLint
-npm run typecheck          # tsc --noEmit
-npm run migration:run      # Apply TypeORM migrations
-npm run migration:generate # Generate migration from entity diff
-```
+- `docs/TRD.md`: design narrative, source of truth.
+- `docs/PLAN.md`: cycles in order. One cycle per session, stop after.
 
 ## Stack
 
@@ -24,49 +15,9 @@ NestJS 11, TypeScript strict (no `any`), TypeORM with migrations checked in (`sy
 
 ## Layout
 
-NestJS monorepo (`nest-cli.json` `monorepo` mode). Two applications under `apps/`:
-
-```
-apps/
-  time-off-service/        # main service (default project)
-    src/
-      main.ts
-      app.module.ts
-      common/
-      config/              # env.validation.ts (Joi)
-      modules/{time-off, balances, hcm-sync}
-      database/{entities, migrations, data-source.ts}
-  mock-hcm/                # standalone mock HCM (dev/test only)
-    src/{main.ts, mock-hcm.module.ts, controllers/, services/}
-    fixtures/
-docs/        # TRD, plan, ADRs, companion specs
-```
-
-E2E specs run via `vitest.config.e2e.ts` (`*.e2e-spec.ts`).
-
-## Read first
-
-Open the relevant document before designing or coding in that area:
-
-- `docs/TRD.md`: design narrative, source of truth.
-- `docs/PLAN.md`: cycles in order. One cycle per session, stop after.
-- `docs/trd/requirements.md`: when touching a REQ-* or INV-*.
-- `docs/trd/api-contract.md`: when touching HTTP surface.
-- `docs/trd/test-strategy.md`: before writing tests at a new layer.
-- `docs/trd/mock-hcm.md`: when touching HCM interactions.
-- `docs/trd/adr/README.md`: ADRs. Read when working in that decision's area.
+NestJS monorepo (`nest-cli.json` `monorepo` mode). Two applications under `apps/`
 
 ## YOU MUST follow these rules
-
-### Skill-first, always
-
-Before doing anything (writing tests, writing code, reviewing, debugging, designing), check if an installed skill or agent covers the task and use it. Don't roll your own approach when a battle-tested one is installed.
-
-- All test work: use `test-driven-development` from obra/superpowers.
-- Debugging: use `systematic-debugging`.
-- "Is it done?": use `verification-before-completion`.
-- Parallel review: use `subagent-driven-development`.
-- Skip `/superpowers:brainstorm` and `/superpowers:write-plan`. The design lives in the TRD; the plan lives in `docs/PLAN.md`. Execute the active cycle.
 
 ### NestJS docs are the source
 
@@ -90,11 +41,75 @@ Never trust a 2xx HCM response blindly. The arithmetic check (`new_total_days ==
 
 ### Architectural decisions
 
-TRD is the source of truth. Don't invent rules; if a behavior isn't specified, ask. Any architectural call not covered by the TRD requires a new ADR in `docs/` before code, following the Nygard format of the existing eight.
+TRD is the source of truth. Don't invent rules; if a behavior isn't specified, ask. Any architectural call not covered by the TRD requires a new ADR in `docs/trd/adr/` before code, following the Nygard format of the existing eight.
 
 ### Scope discipline
 
 One cycle per session. The cycle's stop condition in `docs/PLAN.md` is the stop condition. Each cycle's "Out of scope" list names which later cycle picks up the deferred work. If you find yourself pulling future scope in, stop and reconsider.
+
+## Cycle workflow
+
+Skip `/superpowers:brainstorm` and `/superpowers:write-plan`. The design lives in the TRD, the plan lives in `docs/PLAN.md`. Every cycle follows the seven phases below. Skip a phase, the cycle isn't done.
+
+### 1. Read and map
+
+After reading `CLAUDE.md`, `docs/PLAN.md` (active cycle), and the TRD/companion sections that cycle points to, list in writing:
+
+- Which obra/superpowers skills apply (TDD, systematic-debugging, dispatching-parallel-agents, verification-before-completion).
+- Which agency agents will be called and at which phase.
+- Which sub-tasks are independent enough for parallel subagents.
+
+### 2. Surface conflicts
+
+Name inconsistencies between CLAUDE.md, the TRD, the active cycle's plan, and prior-cycle code. Ask before resolving.
+
+### 3. Design consultation
+
+For any decision the cycle doesn't already settle (saga sequencing, retry policy, indexes, breaker thresholds, anything you'd otherwise guess on):
+
+- Call `/advisor` (Opus) for the technical consult.
+- Activate the **Software Architect** agency agent in parallel to review the same approach for trade-offs and design principles.
+- Reconcile the two recommendations. Surface any divergence to me.
+
+Non-obvious recommendation? Write ADR-N+1 in `docs/trd/adr/` before any code.
+
+### 4. Approval gate
+
+State back: one-paragraph plan, agent/skill map, parallelization plan, ADRs to be written, PR strategy (one or many). Wait for my go-ahead. No code before this point.
+
+### 5. Parallel implementation
+
+Parallelization is the default; sequential work is the exception you justified in phase 1. Use `obra/superpowers:dispatching-parallel-agents`, one git worktree per agent:
+
+```bash
+git worktree add ../<repo>-cycle-NN-<subtask> -b cycle-NN-<subtask>
+```
+
+Each subagent:
+
+- Activates the **Backend Architect** persona for module and code-level design inside its worktree.
+- Uses `test-driven-development` for every behavioral test.
+- Uses `systematic-debugging` when stuck past one retry.
+- Commits atomically per CLAUDE.md format.
+
+Integrate sub-task branches into `cycle-NN-<slug>` with merge commits. Clean worktrees with `git worktree remove`.
+
+### 6. Pre-PR review
+
+On the integration branch, in order:
+
+1. **Database Optimizer** if the cycle touched schema, indexes, or query plans.
+2. **Security Engineer** if it touched auth, RBAC, validation, PII, or the network.
+3. **API Tester** if it changed any HTTP contract or e2e path.
+4. **Code Reviewer** (always).
+5. **Reality Checker** final "is this actually done" gate (always).
+6. `verification-before-completion` as the last check.
+
+Resolve every finding before opening the PR.
+
+### 7. Pull request
+
+Use the template under "Commits and pull requests" below. Branch: `cycle-NN-<slug>`. Merge commit.
 
 ## YOLO mode safety
 
@@ -103,7 +118,6 @@ One cycle per session. The cycle's stop condition in `docs/PLAN.md` is the stop 
 - No `rm -rf` outside `dist/`, `coverage/`, `node_modules/`, `/tmp/`. State the absolute path first.
 - No `git push --force`, `git reset --hard`, or history rewrites on shared branches.
 - No `chmod 777`, `sudo`, or `curl | sh`.
-- No editing `.env` (use `.env.example`), no editing committed migrations (add a new one), no disabling tests or lint rules to green CI.
 - No "nuke `node_modules` to fix it" before naming the actual cause.
 
 Stop and ask before any destructive step.
@@ -120,14 +134,12 @@ Stop and ask before any destructive step.
 
 ### Concrete TypeScript / NestJS rules
 
-- No `any`. Use `unknown` and narrow with type guards.
 - Constructor DI for every dependency.
 - DTOs validated by `class-validator` on every HTTP boundary (whitelist + `forbidNonWhitelisted`).
 - Typed exceptions mapped to HTTP via a filter. Never throw strings.
 - Pino logger via DI. No `console.log` in `src/`.
 - Async/await only. No `.then()` chains, no mixing.
 - Named constants for meaningful literals (timeouts, retry counts, status strings).
-- Unit specs: `src/**/*.spec.ts`. E2E specs: `test/`.
 
 ### Documentation
 
@@ -145,16 +157,8 @@ Conventional Commits. One logical change per commit. Caveman-terse subject, info
 
 - Subject: `<type>(<scope>): <imperative summary>`, under 60 chars. Types: `feat fix refactor test docs chore perf`.
 - Body: 2-5 short lines on the **why**, plus cycle + REQ-IDs.
-- If a subject needs "and also...", split the commit.
 - Never commit broken code.
 
-```
-feat(time-off): submit request reserves balance
-
-Atomic INSERT + balance UPDATE with version check.
-Returns 409 on insufficient available.
-Cycle 02. REQ-LIFE-01, REQ-LIFE-02, INV-03.
-```
 
 ### Pull requests
 
@@ -164,30 +168,6 @@ Mergeable when: feature complete, `typecheck + test + lint` green, cycle accepta
 
 Branch: `cycle-NN-<slug>`. Merge commit (preserves atomic history; reviewers see each well-formed commit).
 
-PR description:
-
-```
-## Plan
-Link to cycle in docs/PLAN.md.
-
-## What
-User-visible change; endpoints/flows touched.
-
-## Why
-Requirement or architectural goal. TRD section + REQ-IDs.
-
-## REQ-IDs
-REQ-LIFE-01, REQ-LIFE-02, INV-03
-
-## Tests
-Unit | Integration | E2E | Property (INV-IDs covered).
-
-## Out of scope
-Pointer to the next plan/PR that picks it up.
-
-## Notes
-Trade-offs, alternatives, anything unusual.
-```
 
 ## Skills and agents
 
@@ -203,14 +183,14 @@ Agency agents to call by name:
 - **Security Engineer**: JWT + RBAC, input validation, PII redaction.
 - **API Tester**: e2e + contract test planning.
 - **Reality Checker**: final "is this actually done" gate.
-- **Software Architect**: hard trade-offs; complements `/advisor`.
+- **Software Architect**: hard trade-offs; pairs with `/advisor` in the design phase.
 - **Technical Writer**: ADRs, README, public docs.
 
 If the agent isn't obvious, ask.
 
 ## Repo etiquette
 
-Migrations are checked in; never edit a committed migration, add a new one. Never commit `.env`; `.env.example` is the contract. Don't commit generated files (`dist/`, `coverage/`).
+Migrations are checked in; never edit a committed migration, add a new one. Never commit `.env`; `.env.example` is the contract. Don't commit generated files (`dist/`, `coverage/`). `docs/` is gitignored (intentional). Read from it; write to it freely; don't commit it.
 
 ## Rules added over time
 
