@@ -13,8 +13,11 @@ import { actorTypeOf, type Principal } from '../auth/principal';
 import { BalanceRepository } from '../balances/balance.repository';
 import { InvalidTransitionError } from '../../common/errors/invalid-transition.error';
 import { RequestRepository } from './request.repository';
+import type { ListRequestsQuery } from './request.repository';
 import { CancellationSagaService } from './sagas/cancellation-saga.service';
 import { toRequestResponse, type RequestResponse } from './dto/request-response.dto';
+import type { RequestListResponse } from './dto/request-list-response.dto';
+import type { ListRequestsQueryDto } from './dto/list-requests-query.dto';
 import type { SubmitRequestDto } from './dto/submit-request.dto';
 
 /**
@@ -119,6 +122,58 @@ export class RequestService {
         return toRequestResponse(created!);
       }),
     );
+  }
+
+  /**
+   * Returns a single request by id with REQ-DEF-10 authz-indistinguishability:
+   * - EMPLOYEE: can only see own requests. If the request belongs to someone else,
+   *   or does not exist, throw ForbiddenError (same error either way — no leakage).
+   * - MANAGER/ADMIN: can see any request. If not found → RequestNotFoundError (404).
+   * @throws ForbiddenError (403) when an EMPLOYEE targets another employee's request
+   *   or a non-existent id (existence hiding, REQ-DEF-10)
+   * @throws RequestNotFoundError (404) when a MANAGER/ADMIN targets a missing id
+   */
+  async findById(actor: Principal, requestId: string): Promise<RequestResponse> {
+    const isEmployee = !actor.roles.includes('MANAGER') && !actor.roles.includes('ADMIN');
+    const request = await this.requestRepository.findById(requestId);
+
+    if (!request) {
+      // Admins/managers learn the resource is absent (true 404); employees get a
+      // 403 so they cannot probe for existence of other employees' requests (REQ-DEF-10).
+      throw this.authorization.canSeeExistence(actor)
+        ? new RequestNotFoundError()
+        : new ForbiddenError();
+    }
+
+    if (isEmployee && request.employeeId !== actor.sub) {
+      // Employee owns a valid id but it belongs to someone else — same 403 as above.
+      throw new ForbiddenError();
+    }
+
+    return toRequestResponse(request);
+  }
+
+  /**
+   * Lists requests newest-first with keyset cursor pagination (REQ-LIST-01).
+   * - EMPLOYEE: sees only their own requests.
+   * - MANAGER/ADMIN: sees all requests.
+   * @throws RequestCursorError (400) when the cursor is malformed
+   */
+  async list(actor: Principal, query: ListRequestsQueryDto): Promise<RequestListResponse> {
+    const isEmployee = !actor.roles.includes('MANAGER') && !actor.roles.includes('ADMIN');
+    const employeeId = isEmployee ? actor.sub : null;
+
+    const repoQuery: ListRequestsQuery = {
+      limit: query.limit,
+      cursor: query.cursor,
+      status: query.status,
+    };
+
+    const page = await this.requestRepository.list(employeeId, repoQuery);
+    return {
+      data: page.data.map(toRequestResponse),
+      pagination: page.pagination,
+    };
   }
 
   /**
