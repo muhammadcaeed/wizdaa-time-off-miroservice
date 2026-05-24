@@ -22,11 +22,15 @@ describe('HCM resilience (e2e): retry exhaustion, breaker trip, 503 fast-fail', 
 
   const EMPS = ['emp_a', 'emp_b', 'emp_c'] as const;
 
+  // Short cool-down so the recovery test can wait out OPEN→HALF_OPEN without a
+  // 30s pause; the trip→fast-fail assertions run in microseconds, well inside it.
+  const COOLDOWN_MS = 500;
+
   beforeAll(async () => {
     const ref = await Test.createTestingModule({ imports: [MockHcmModule] }).compile();
     mock = ref.createNestApplication();
     await mock.listen(0);
-    ctx = await bootstrapE2E({ hcmBaseUrl: await mock.getUrl() });
+    ctx = await bootstrapE2E({ hcmBaseUrl: await mock.getUrl(), breakerCooldownMs: COOLDOWN_MS });
 
     await ctx.dataSource
       .getRepository(Location)
@@ -82,6 +86,8 @@ describe('HCM resilience (e2e): retry exhaustion, breaker trip, 503 fast-fail', 
     await mock.close();
   });
 
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
   const approve = (emp: string, sub = 'mgr_001', roles: ('MANAGER' | 'ADMIN')[] = ['MANAGER']) =>
     request(ctx.httpServer)
       .post(`/api/v1/requests/req_${emp}/approve`)
@@ -131,5 +137,24 @@ describe('HCM resilience (e2e): retry exhaustion, breaker trip, 503 fast-fail', 
       .get('/api/v1/admin/hcm/breaker')
       .set('Authorization', bearer('mgr_001', ['MANAGER']))
       .expect(403);
+  });
+
+  it('recovers after cool-down: the HALF_OPEN probe succeeds and closes the breaker (REQ-SYNC-06)', async () => {
+    // HCM is healthy again.
+    await request(mock.getHttpServer())
+      .post('/mock/control/scenarios')
+      .send({ endpoints: { adjust: 'normal' } });
+    await sleep(COOLDOWN_MS + 250); // cool-down elapses → next call drives the probe
+
+    // emp_c was left SUBMITTED by the 503 fast-fail; approving it now falls
+    // through the pre-gate (no longer hard-open) into the decorator's probe.
+    const res = await approve('emp_c').expect(202);
+    expect((res.body as RequestResponse).status).toBe('APPROVED');
+
+    const breaker = await request(ctx.httpServer)
+      .get('/api/v1/admin/hcm/breaker')
+      .set('Authorization', bearer('admin_1', ['ADMIN']))
+      .expect(200);
+    expect((breaker.body as { state: string }).state).toBe('CLOSED');
   });
 });

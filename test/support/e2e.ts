@@ -22,6 +22,12 @@ export interface BootstrapOptions {
    * collapsed to keep the suite fast.
    */
   hcmBaseUrl?: string;
+  /**
+   * Override the shared {@link CircuitBreaker}'s cool-down (ms). Lets a recovery
+   * test wait out OPEN→HALF_OPEN in a few hundred ms instead of the 30s default,
+   * without relying on env-load ordering. Other breaker thresholds stay env-driven.
+   */
+  breakerCooldownMs?: number;
 }
 
 export interface E2EContext {
@@ -41,6 +47,23 @@ export interface E2EContext {
  */
 export async function bootstrapE2E(options: BootstrapOptions = {}): Promise<E2EContext> {
   let builder = Test.createTestingModule({ imports: [AppModule] });
+  if (options.breakerCooldownMs !== undefined) {
+    const cooldownMs = options.breakerCooldownMs;
+    builder = builder.overrideProvider(CircuitBreaker).useFactory({
+      inject: [ConfigService, getLoggerToken(CircuitBreaker.name)],
+      factory: (config: ConfigService, logger: PinoLogger) =>
+        new CircuitBreaker(
+          {
+            failureThreshold: config.getOrThrow<number>('HCM_BREAKER_FAILURE_THRESHOLD'),
+            failureRate: config.getOrThrow<number>('HCM_BREAKER_FAILURE_RATE'),
+            cooldownMs,
+            probeDeadlineMs: config.getOrThrow<number>('HCM_BREAKER_PROBE_DEADLINE_MS'),
+          },
+          Date.now,
+          logger,
+        ),
+    });
+  }
   if (options.hcmAdjuster) {
     builder = builder.overrideProvider(HCM_ADJUSTER).useValue(options.hcmAdjuster);
   } else if (options.hcmBaseUrl) {
