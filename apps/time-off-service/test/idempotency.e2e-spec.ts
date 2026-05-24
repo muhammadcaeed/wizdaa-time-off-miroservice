@@ -157,7 +157,7 @@ describe('Idempotency (e2e)', () => {
       expect(recordsAfter).toHaveLength(1);
     });
 
-    it('returns 409 conflict when same key is used with different body', async () => {
+    it('returns 422 conflict when same key is used with different body', async () => {
       const idempotencyKey = randomUUID();
 
       // First call.
@@ -174,20 +174,25 @@ describe('Idempotency (e2e)', () => {
         .set('Authorization', bearer('emp_idem_2', ['EMPLOYEE']))
         .set('Idempotency-Key', idempotencyKey)
         .send({ ...submitBody(), days_requested: 5 })
-        .expect(409);
+        .expect(422);
 
       expect(conflictRes.body).toMatchObject({
         type: 'https://api.wizdaa.dev/errors/idempotency-conflict',
-        status: 409,
+        status: 422,
       });
     });
 
-    it('works without an Idempotency-Key (pass-through)', async () => {
-      await request(ctx.httpServer)
+    it('returns 400 when Idempotency-Key header is absent', async () => {
+      const res = await request(ctx.httpServer)
         .post('/api/v1/requests')
         .set('Authorization', bearer('emp_idem_3', ['EMPLOYEE']))
         .send(submitBody())
-        .expect(201);
+        .expect(400);
+
+      expect(res.body).toMatchObject({
+        type: 'https://api.wizdaa.dev/errors/idempotency-key-missing',
+        status: 400,
+      });
     });
   });
 
@@ -199,6 +204,7 @@ describe('Idempotency (e2e)', () => {
       const res = await request(ctx.httpServer)
         .post('/api/v1/requests')
         .set('Authorization', bearer('emp_idem_1', ['EMPLOYEE']))
+        .set('Idempotency-Key', randomUUID())
         .send({
           location_id: 'loc_idem',
           start_date: '2027-09-01',
@@ -245,6 +251,7 @@ describe('Idempotency (e2e)', () => {
       const res = await request(ctx.httpServer)
         .post('/api/v1/requests')
         .set('Authorization', bearer('emp_idem_1', ['EMPLOYEE']))
+        .set('Idempotency-Key', randomUUID())
         .send({
           location_id: 'loc_idem',
           start_date: '2027-10-01',

@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 import { Observable } from 'rxjs';
 import { IdempotencyConflictError } from '../../common/errors/idempotency-conflict.error';
 import { IdempotencyKeyInvalidError } from '../../common/errors/idempotency-key-invalid.error';
+import { IdempotencyKeyMissingError } from '../../common/errors/idempotency-key-missing.error';
 import { IdempotencyService } from './idempotency.service';
 
 /** UUID v4 pattern (case-insensitive). */
@@ -39,7 +40,7 @@ function sortedJsonStringify(value: unknown): string {
  * Idempotency interceptor for POST endpoints (api-contract.md §6).
  *
  * Behaviour:
- * - If no `Idempotency-Key` header: pass through transparently (no-op).
+ * - If no `Idempotency-Key` header: throw {@link IdempotencyKeyMissingError} (400).
  * - If header present but not a UUID v4: throw {@link IdempotencyKeyInvalidError} (400).
  * - If key seen before and NOT expired:
  *   - Same request hash → replay stored response immediately, do NOT re-execute.
@@ -70,7 +71,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     const rawKey = req.headers['idempotency-key'];
     if (!rawKey) {
-      return next.handle();
+      throw new IdempotencyKeyMissingError();
     }
 
     const key = Array.isArray(rawKey) ? rawKey[0] : rawKey;

@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { bearer } from '../../../test/support/auth';
@@ -68,7 +69,8 @@ describe('Admin retry endpoints (e2e)', () => {
   const retryApproval = (reqId: string, sub: string, roles: ('EMPLOYEE' | 'MANAGER' | 'ADMIN')[]) =>
     request(ctx.httpServer)
       .post(`/api/v1/requests/${reqId}/approval-retries`)
-      .set('Authorization', bearer(sub, roles));
+      .set('Authorization', bearer(sub, roles))
+      .set('Idempotency-Key', randomUUID());
 
   const retryCancellation = (
     reqId: string,
@@ -77,7 +79,8 @@ describe('Admin retry endpoints (e2e)', () => {
   ) =>
     request(ctx.httpServer)
       .post(`/api/v1/requests/${reqId}/cancellation-retries`)
-      .set('Authorization', bearer(sub, roles));
+      .set('Authorization', bearer(sub, roles))
+      .set('Idempotency-Key', randomUUID());
 
   beforeAll(async () => {
     const ref = await Test.createTestingModule({ imports: [MockHcmModule] }).compile();

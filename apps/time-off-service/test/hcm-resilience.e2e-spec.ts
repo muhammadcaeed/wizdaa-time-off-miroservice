@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { bearer } from '../../../test/support/auth';
@@ -91,7 +92,8 @@ describe('HCM resilience (e2e): retry exhaustion, breaker trip, 503 fast-fail', 
   const approve = (emp: string, sub = 'mgr_001', roles: ('MANAGER' | 'ADMIN')[] = ['MANAGER']) =>
     request(ctx.httpServer)
       .post(`/api/v1/requests/req_${emp}/approve`)
-      .set('Authorization', bearer(sub, roles));
+      .set('Authorization', bearer(sub, roles))
+      .set('Idempotency-Key', randomUUID());
 
   async function adjustCallCount(): Promise<number> {
     const res = await request(mock.getHttpServer()).get('/mock/control/calls').expect(200);

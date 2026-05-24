@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { bearer } from '../../../test/support/auth';
@@ -90,7 +91,8 @@ describe('POST /api/v1/requests/:id/cancel (e2e)', () => {
   const cancel = (reqId: string, sub: string, roles: ('EMPLOYEE' | 'MANAGER' | 'ADMIN')[]) =>
     request(ctx.httpServer)
       .post(`/api/v1/requests/${reqId}/cancel`)
-      .set('Authorization', bearer(sub, roles));
+      .set('Authorization', bearer(sub, roles))
+      .set('Idempotency-Key', randomUUID());
 
   /** All recorded adjust calls (oldest first), with their idempotency keys. */
   async function adjustCalls(): Promise<{ path: string; key?: string }[]> {
@@ -134,6 +136,7 @@ describe('POST /api/v1/requests/:id/cancel (e2e)', () => {
     const submitted = await request(ctx.httpServer)
       .post('/api/v1/requests')
       .set('Authorization', bearer('emp_life', ['EMPLOYEE']))
+      .set('Idempotency-Key', randomUUID())
       .send({
         location_id: LOC,
         start_date: FUTURE_START,
@@ -147,6 +150,7 @@ describe('POST /api/v1/requests/:id/cancel (e2e)', () => {
     const approved = await request(ctx.httpServer)
       .post(`/api/v1/requests/${reqId}/approve`)
       .set('Authorization', bearer(MGR, ['MANAGER']))
+      .set('Idempotency-Key', randomUUID())
       .expect(202);
     expect((approved.body as RequestResponse).status).toBe('APPROVED');
 
@@ -297,6 +301,7 @@ describe('POST /api/v1/requests/:id/cancel (e2e)', () => {
     const submitted = await request(ctx.httpServer)
       .post('/api/v1/requests')
       .set('Authorization', bearer('emp_chaos', ['EMPLOYEE']))
+      .set('Idempotency-Key', randomUUID())
       .send({
         location_id: LOC,
         start_date: FUTURE_START,
@@ -308,6 +313,7 @@ describe('POST /api/v1/requests/:id/cancel (e2e)', () => {
     await request(ctx.httpServer)
       .post(`/api/v1/requests/${reqId}/approve`)
       .set('Authorization', bearer(MGR, ['MANAGER']))
+      .set('Idempotency-Key', randomUUID())
       .expect(202);
 
     // Now drive the increment into an unverifiable success (HCM stays at 7; the
@@ -404,6 +410,7 @@ describe('Cancel reverse saga — breaker OPEN fast-fail (e2e chaos)', () => {
     const res = await request(ctx.httpServer)
       .post('/api/v1/requests/req_brk/cancel')
       .set('Authorization', bearer('emp_brk', ['EMPLOYEE']))
+      .set('Idempotency-Key', randomUUID())
       .expect(503);
     expect((res.body as { type: string }).type).toBe('/errors/hcm-unavailable');
 
