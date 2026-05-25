@@ -2,6 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import type { Server } from 'node:http';
 import { bearer } from '../../../test/support/auth';
 import { bootstrapE2E, type E2EContext } from '../../../test/support/e2e';
 import { MockHcmModule } from '../../mock-hcm/src/mock-hcm.module';
@@ -62,7 +63,7 @@ describe('POST /api/v1/requests/:id/cancel (e2e)', () => {
       reservedDays: reserved,
       version: 0,
     });
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/balances')
       .send({ employee_id: id, location_id: LOC, total_days: total });
   }
@@ -96,7 +97,9 @@ describe('POST /api/v1/requests/:id/cancel (e2e)', () => {
 
   /** All recorded adjust calls (oldest first), with their idempotency keys. */
   async function adjustCalls(): Promise<{ path: string; key?: string }[]> {
-    const res = await request(mock.getHttpServer()).get('/mock/control/calls').expect(200);
+    const res = await request(mock.getHttpServer() as Server)
+      .get('/mock/control/calls')
+      .expect(200);
     const body = res.body as {
       calls: { path: string; headers: { 'idempotency-key'?: string } }[];
     };
@@ -318,7 +321,7 @@ describe('POST /api/v1/requests/:id/cancel (e2e)', () => {
 
     // Now drive the increment into an unverifiable success (HCM stays at 7; the
     // arithmetic check expects 7 + 3 = 10 and sees 7 → mismatch → ambiguous).
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: 'unverifiable-success' }, scope: { employee_id: 'emp_chaos' } });
 
@@ -379,7 +382,7 @@ describe('Cancel reverse saga — breaker OPEN fast-fail (e2e chaos)', () => {
       reservedDays: 0,
       version: 0,
     });
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/balances')
       .send({ employee_id: 'emp_brk', location_id: LOC, total_days: 7 });
     // Seed a genuine APPROVED future-dated request to cancel.

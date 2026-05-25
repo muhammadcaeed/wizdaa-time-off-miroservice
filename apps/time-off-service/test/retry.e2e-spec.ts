@@ -2,6 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import type { Server } from 'node:http';
 import { bearer } from '../../../test/support/auth';
 import { bootstrapE2E, type E2EContext } from '../../../test/support/e2e';
 import { MockHcmModule } from '../../mock-hcm/src/mock-hcm.module';
@@ -43,7 +44,7 @@ describe('Admin retry endpoints (e2e)', () => {
       reservedDays: reserved,
       version: 0,
     });
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/balances')
       .send({ employee_id: id, location_id: LOC, total_days: total });
   }

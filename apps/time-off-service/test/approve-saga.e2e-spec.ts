@@ -2,6 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import type { Server } from 'node:http';
 import { bearer } from '../../../test/support/auth';
 import { bootstrapE2E, type E2EContext } from '../../../test/support/e2e';
 import { MockHcmModule } from '../../mock-hcm/src/mock-hcm.module';
@@ -86,7 +87,7 @@ describe('POST /api/v1/requests/:id/approve (e2e)', () => {
         status: 'SUBMITTED',
         submittedAt: new Date(),
       });
-      await request(mock.getHttpServer())
+      await request(mock.getHttpServer() as Server)
         .post('/mock/control/balances')
         .send({ employee_id: emp, location_id: 'loc_001', total_days: 10 });
     }
@@ -129,7 +130,7 @@ describe('POST /api/v1/requests/:id/approve (e2e)', () => {
   });
 
   it('F-04: unverifiable HCM success drives APPROVAL_FAILED and releases the reservation', async () => {
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: 'unverifiable-success' }, scope: { employee_id: 'emp_f' } });
 
