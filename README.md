@@ -18,10 +18,10 @@ npx vitest run --config vitest.config.coverage.ts <name-fragment>
 
 | # | Challenge (from the brief) | Solution | TRD | Plan | Primary tests (REQ / scenario) | Run |
 |---|---|---|---|---|---|---|
-| 1 | "ExampleHR is not the only system that updates HCM … work anniversary or start of the year … refresh of time off balances" | Scheduled **batch reconciliation** discovers external changes (no webhooks); safe drift updates the local total, unsafe drift (HCM < reserved) raises a conflict; **point reconciliation** handles single-balance drift detected on the hot path. | §9.2, §9.3, §9.7 | 04, 06 | REQ-REC-01..06, F-08, R-06 — `reconciliation.service.spec.ts`, `reconciliation.e2e-spec.ts` | `npx vitest run --config vitest.config.coverage.ts reconciliation` |
+| 1 | "ExampleHR is not the only system that updates HCM … work anniversary or start of the year … refresh of time off balances" | Scheduled **batch reconciliation** discovers external changes (no webhooks); safe drift updates the local total, unsafe drift (HCM < reserved) raises a conflict; **point reconciliation** handles single-balance drift detected on the hot path. | §9.2, §9.3 | 04, 06 | REQ-REC-01..06, F-08, R-06 — `reconciliation.service.spec.ts`, `reconciliation.e2e-spec.ts` | `npx vitest run --config vitest.config.coverage.ts reconciliation` |
 | 2 | "HCM provides a realtime API for getting or sending time off values" | Approval/cancellation sagas call the realtime `POST /balances/adjust`; reads use the realtime reader. Every write carries an idempotency key `<request_id>:<op>`. | §9.1, §9.2 | 02, 03 | REQ-SYNC-01/02/03 — `hcm-client.contract.spec.ts`, `hcm-reader-client.contract.spec.ts` | `npx vitest run --config vitest.config.coverage.ts hcm-client.contract` |
 | 3 | "HCM provides a batch end point that would send the whole corpus of time off balances" | Reconciliation pulls the batch endpoint with `since=<last_run>`, paginated, and reconciles each balance against local state inside an OCC-guarded transaction. | §9.3 | 04 | REQ-REC-01, REQ-REC-04 — `reconciliation.service.spec.ts` (batch path), `reconciliation.repository.spec.ts` | `npx vitest run --config vitest.config.coverage.ts reconciliation.service` |
-| 4 | "We can count on HCM to send back errors … HOWEVER this may not be always guaranteed; we want to be defensive about it." | Never trust a 2xx blindly: a mandatory **arithmetic check** (`new_total == pre_total ± delta`) + `hcm_correlation_id` presence on every adjust response; ambiguous responses fail the saga and enqueue point reconciliation; **circuit breaker + retry** for faults; a **stuck-state sweep** resolves requests wedged mid-saga. | §9.4, §9.7, §11 | 02, 03, 06 | REQ-SYNC-03/04, F-01..F-05, REQ-DEF-07/11/12 — `hcm-response-check.spec.ts`, `circuit-breaker.spec.ts`, `stuck-state-sweep.e2e-spec.ts` | `npx vitest run --config vitest.config.coverage.ts hcm-response-check` |
+| 4 | "We can count on HCM to send back errors … HOWEVER this may not be always guaranteed; we want to be defensive about it." | Never trust a 2xx blindly: a mandatory **arithmetic check** (`new_total == pre_total ± delta`) + `hcm_correlation_id` presence on every adjust response; ambiguous responses fail the saga and enqueue point reconciliation; **circuit breaker + retry** for faults; a **stuck-state sweep** resolves requests wedged mid-saga. | §9.2, §9.3, §11 | 02, 03, 06 | REQ-SYNC-03/04, F-01..F-05, REQ-DEF-07/11/12 — `hcm-response-check.spec.ts`, `circuit-breaker.spec.ts`, `stuck-state-sweep.e2e-spec.ts` | `npx vitest run --config vitest.config.coverage.ts hcm-response-check` |
 
 A fifth cross-cutting concern — **concurrent writes preserving balance invariants** (employees, managers, and reconciliation acting on the same row) — is handled by optimistic concurrency with bounded retry and verified by property-based tests over random operation sequences (INV-01..05, R-01..R-06; `invariants.property.spec.ts`, TRD §10).
 
@@ -142,7 +142,8 @@ scripts/
 docs/
   TRD.md              design narrative (source of truth)
   plan/               the eight implementation cycles
-  trd/                requirements.md, api-contract.md, test-strategy.md, traceability.md, mock-hcm.md, adr/
+  trd/                requirements.md, data-model.md, api-contract.md, concurrency.md, hcm-integration.md,
+                      failure-handling.md, test-strategy.md, traceability.md, mock-hcm.md, adr/
 ```
 
 ## Stack
