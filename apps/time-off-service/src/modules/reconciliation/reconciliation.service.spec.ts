@@ -51,7 +51,7 @@ const BAL_ID = 'bal_001';
  * @req REQ-REC-05
  * @req REQ-REC-06
  */
-describe('ReconciliationService (batch + point, TRD §9.3/§9.7)', () => {
+describe('ReconciliationService (batch + point, TRD §9.3/§9.3)', () => {
   let dataSource: DataSource;
   let balanceRepo: BalanceRepository;
   let requestRepo: RequestRepository;
@@ -234,7 +234,7 @@ describe('ReconciliationService (batch + point, TRD §9.3/§9.7)', () => {
 
     const after = await balanceRepo.findByEmployeeAndLocation(EMP_ID, LOC_ID);
     expect(after?.totalDays).toBe(30);
-    // TRD §9.7: the point path sets total_days ONLY; reserved is left untouched.
+    // TRD §9.3: the point path sets total_days ONLY; reserved is left untouched.
     expect(after?.reservedDays).toBe(3);
     expect(after?.version).toBe(1);
     expect(await auditActions()).toEqual(['balance.point_reconciled']);

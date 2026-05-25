@@ -26,7 +26,7 @@ interface RowOutcome {
 }
 
 /**
- * The batch and point reconciliation engine (TRD §9.3, §9.7). HCM is the source
+ * The batch and point reconciliation engine (TRD §9.3, §9.3). HCM is the source
  * of truth for `total_days`; the service owns `reserved_days` and refuses to
  * violate INV-02 (`total - reserved >= 0`) even when HCM disagrees. Implements
  * {@link PointReconciler} so the async point-reconciliation queue (ADR-011) can
@@ -54,7 +54,7 @@ export class ReconciliationService implements PointReconciler {
    * Runs the scheduled batch reconciliation (TRD §9.3). When the breaker is
    * hard-OPEN the run is skipped entirely — no Reconciliation row is created —
    * because hammering an unreachable HCM is pointless and the next scheduled
-   * run resumes from the same `since` (TRD §9.4 "Operations during OPEN").
+   * run resumes from the same `since` (TRD §9.2 "Operations during OPEN").
    * @returns nothing; outcomes are persisted to the run and the audit log
    */
   async runScheduled(): Promise<void> {
@@ -176,7 +176,7 @@ export class ReconciliationService implements PointReconciler {
   }
 
   /**
-   * Reconciles one balance against the HCM realtime read (TRD §9.7), the
+   * Reconciles one balance against the HCM realtime read (TRD §9.3), the
    * fire-and-forget point variant. Resilient by contract: it is invoked from the
    * queue and must never throw on the expected breaker-open or no-drift paths.
    * @param employeeId the employee whose balance to refresh
@@ -205,7 +205,7 @@ export class ReconciliationService implements PointReconciler {
 
     // The HCM read is an HTTP round-trip; it stays OUTSIDE the DB transaction so
     // no SQLite write connection is held open across the network call (TRD §10.4
-    // commit-boundary discipline; the §9.7 pseudocode shows it inside only for
+    // commit-boundary discipline; the §9.3 pseudocode shows it inside only for
     // narrative clarity).
     const rows = await this.hcmReader.getBalances(employeeId);
     const hcmRow = rows.find((r) => r.locationId === locationId);
@@ -281,7 +281,7 @@ export class ReconciliationService implements PointReconciler {
 
     try {
       if (mode === 'POINT') {
-        // §9.7: the point path sets total_days ONLY; reserved is locally owned.
+        // §9.3: the point path sets total_days ONLY; reserved is locally owned.
         await this.balanceRepository.casReconcileTotal(
           local.id,
           local.version,
@@ -320,7 +320,7 @@ export class ReconciliationService implements PointReconciler {
         entityId: local.id,
         action: reconciledAction,
         beforeState,
-        // POINT writes total only (§9.7), so reserved is unchanged; BATCH (§9.3)
+        // POINT writes total only (§9.3), so reserved is unchanged; BATCH (§9.3)
         // reasserts the recomputed reserved sum.
         afterState: {
           totalDays: hcm.totalDays,

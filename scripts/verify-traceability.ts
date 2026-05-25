@@ -4,7 +4,7 @@
  * Enforces the verifier contract documented in `docs/trd/test-strategy.md` §4:
  *
  *   Requirement universe = every bold `**REQ-…**` heading in `requirements.md`
- *                          ∪ the five invariants INV-01..05 (TRD §4.3).
+ *                          ∪ the five invariants INV-01..05 (TRD §4.2).
  *
  * The build fails if any of these hold:
  *   1. A test `@req` annotation references an ID outside the universe.
@@ -24,7 +24,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
-/** The five invariants are defined in TRD §4.3, not as REQ headings. */
+/** The five invariants are defined in TRD §4.2, not as REQ headings. */
 export const INVARIANT_IDS = ['INV-01', 'INV-02', 'INV-03', 'INV-04', 'INV-05'];
 
 const REQ_ID = '[A-Z]+-[0-9]+[a-z]?';

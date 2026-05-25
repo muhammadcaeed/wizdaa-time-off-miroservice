@@ -12,7 +12,7 @@ import { ReconciliationScheduler } from './reconciliation.scheduler';
 import { ReconciliationService } from './reconciliation.service';
 
 /**
- * Batch and point reconciliation (TRD §9.3, §9.7, ADR-011). Imports
+ * Batch and point reconciliation (TRD §9.3, §9.3, ADR-011). Imports
  * {@link BalancesModule} for the shared {@link BalanceRepository},
  * {@link HcmSyncModule} for {@link HCM_READER} + the shared {@link CircuitBreaker},
  * and {@link TimeOffModule} for {@link RequestRepository} (the reserved

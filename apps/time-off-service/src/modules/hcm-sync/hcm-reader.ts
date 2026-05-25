@@ -20,7 +20,7 @@ export interface HcmBatchPage {
  * The narrow read capability consumers depend on (ISP/DIP), parallel to
  * {@link HcmAdjuster}. {@link HcmReaderClient} implements it; tests substitute a
  * fake. Reconciliation (point reads, TRD §9.3) and the change-sweep (batch
- * reads, TRD §9.7) depend only on this token, so the breaker-gating decorator
+ * reads, TRD §9.3) depend only on this token, so the breaker-gating decorator
  * (a later sub-task) can wrap it without touching consumer code.
  */
 export interface HcmReader {

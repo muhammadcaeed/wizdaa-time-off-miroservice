@@ -62,5 +62,13 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 
-# docs
-/docs/
+# docs — ignored by default; only TRD + companion files (trd/) are tracked.
+# Use /docs/* (children) not /docs/ (dir) so nested paths can be re-included.
+/docs/*
+!/docs/TRD.md
+!/docs/trd
+!/docs/trd/**
+!/docs/demo
+!/docs/demo/**
+# never commit OS cruft even under the un-ignored trd/ tree
+/docs/**/.DS_Store

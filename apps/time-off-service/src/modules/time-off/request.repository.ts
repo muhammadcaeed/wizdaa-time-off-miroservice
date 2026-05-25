@@ -216,7 +216,7 @@ export class RequestRepository {
 
   /**
    * Sum of `days_requested` across reserving statuses for an (employee, location)
-   * pair. The source-of-truth side of the INV-03 reservation check (TRD §4.3).
+   * pair. The source-of-truth side of the INV-03 reservation check (TRD §4.2).
    */
   async sumReservedDays(
     employeeId: string,

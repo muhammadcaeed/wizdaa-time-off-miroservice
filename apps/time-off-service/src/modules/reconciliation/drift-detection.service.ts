@@ -17,7 +17,7 @@ export type DriftOp = 'decrement' | 'increment';
 const DRIFT_REASON = 'post_commit_drift';
 
 /**
- * Post-commit drift sanity check (REQ-SYNC-04a, TRD §9.4 item 3). After a saga
+ * Post-commit drift sanity check (REQ-SYNC-04a, TRD §9.2 item 3). After a saga
  * commits a balance change, this asynchronously re-reads the HCM total and, if it
  * disagrees with what the service just committed locally, emits a
  * `hcm.<op>.drift_detected` audit row and enqueues a point reconciliation to fix

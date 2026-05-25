@@ -172,7 +172,7 @@ export class ApplicationDriver {
     }
   }
 
-  /** Asserts INV-01, INV-02, INV-03 hold for every balance (TRD §4.3). */
+  /** Asserts INV-01, INV-02, INV-03 hold for every balance (TRD §4.2). */
   async assertInvariants(): Promise<void> {
     const balances = await this.dataSource.getRepository(Balance).find();
     const requestRepo = new RequestRepository(this.dataSource);

@@ -98,14 +98,14 @@ describe('BalanceRepository (version-check CAS)', () => {
     );
   });
 
-  it('casReconcileTotal sets absolute total only (TRD §9.7), leaves reserved untouched, bumps version', async () => {
+  it('casReconcileTotal sets absolute total only (TRD §9.3), leaves reserved untouched, bumps version', async () => {
     await repo.casReserve(BAL_ID, 0, 4, dataSource.manager); // version 1, reserved 4
 
     await repo.casReconcileTotal(BAL_ID, 1, 25, dataSource.manager);
 
     const after = await repo.findByEmployeeAndLocation(EMP_ID, LOC_ID);
     expect(after?.totalDays).toBe(25);
-    expect(after?.reservedDays).toBe(4); // §9.7 does NOT touch reserved
+    expect(after?.reservedDays).toBe(4); // §9.3 does NOT touch reserved
     expect(after?.version).toBe(2);
     expect(after?.lastHcmSyncAt).not.toBeNull();
   });
