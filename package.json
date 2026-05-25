@@ -6,6 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
+    "setup": "node scripts/setup.mjs",
     "build": "nest build time-off-service",
     "build:mock-hcm": "nest build mock-hcm",
     "format": "prettier --write \"apps/**/*.ts\"",
