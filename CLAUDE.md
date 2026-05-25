@@ -35,10 +35,6 @@ Touch only what the current cycle needs. Match existing style. If you see unrela
 
 Run `npm run typecheck && npm test && npm run lint` after every edit. If anything is red, stop and fix before continuing. Don't claim a cycle is done until tests pass cleanly and the cycle's acceptance criteria in `docs/PLAN.md` are observably true.
 
-### Defensive HCM stance
-
-Never trust a 2xx HCM response blindly. The arithmetic check (`new_total_days == pre_total ± delta`) is mandatory on every adjust response. Ambiguous responses fail the saga; they don't commit it. See ADR-008 and TRD §9.2.
-
 ### Architectural decisions
 
 TRD is the source of truth. Don't invent rules; if a behavior isn't specified, ask. Any architectural call not covered by the TRD requires a new ADR in `docs/trd/adr/` before code, following the Nygard format of the existing twelve.
@@ -110,17 +106,6 @@ Resolve every finding before opening the PR.
 ### 7. Pull request
 
 Use the template under "Commits and pull requests" below. Branch: `cycle-NN-<slug>`. Merge commit.
-
-## YOLO mode safety
-
-`--dangerously-skip-permissions` is on. Self-impose:
-
-- No `rm -rf` outside `dist/`, `coverage/`, `node_modules/`, `/tmp/`. State the absolute path first.
-- No `git push --force`, `git reset --hard`, or history rewrites on shared branches.
-- No `chmod 777`, `sudo`, or `curl | sh`.
-- No "nuke `node_modules` to fix it" before naming the actual cause.
-
-Stop and ask before any destructive step.
 
 ## Coding practices
 
