@@ -23,7 +23,9 @@
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "coverage": "vitest run --config ./vitest.config.coverage.ts --coverage",
     "verify:traceability": "ts-node --project scripts/tsconfig.json scripts/verify-traceability.ts",
-    "ci": "npm run typecheck && npm run lint:check && npm run coverage && npm run verify:traceability",
+    "demo:scenarios": "ts-node --project scripts/tsconfig.json scripts/demo-scenarios.ts",
+    "demo:check": "ts-node --project scripts/tsconfig.json scripts/demo-check.ts",
+    "ci": "npm run typecheck && npm run lint:check && npm run coverage && npm run verify:traceability && npm run demo:check",
     "migration:run": "typeorm-ts-node-commonjs migration:run -d apps/time-off-service/src/database/data-source.ts",
     "migration:revert": "typeorm-ts-node-commonjs migration:revert -d apps/time-off-service/src/database/data-source.ts",
     "migration:generate": "typeorm-ts-node-commonjs migration:generate -d apps/time-off-service/src/database/data-source.ts"

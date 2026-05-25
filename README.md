@@ -25,6 +25,18 @@ npx vitest run --config vitest.config.coverage.ts <name-fragment>
 
 A fifth cross-cutting concern — **concurrent writes preserving balance invariants** (employees, managers, and reconciliation acting on the same row) — is handled by optimistic concurrency with bounded retry and verified by property-based tests over random operation sequences (INV-01..05, R-01..R-06; `invariants.property.spec.ts`, TRD §10).
 
+## See it run — the live showcase
+
+The four challenges (and more) are also a runnable, self-asserting walkthrough:
+
+```bash
+npm run demo:scenarios
+```
+
+This boots the real service + mock HCM as separate processes, drives them over HTTP, narrates each scenario, and asserts every outcome (non-zero exit on any mismatch). The same run regenerates [`docs/demo/SHOWCASE.md`](docs/demo/SHOWCASE.md) — a GitHub-rendered tour with a **Mermaid sequence diagram of the real calls** per scenario, before/after balance tables, and the four challenges flagged. `npm run ci` includes `demo:check`, which fails the build if that showcase ever drifts from real behavior.
+
+Eight scenarios across three themes: **Lifecycle** (reservation, approval saga, cancellation), **Resilience** (ambiguous-HCM defense), **Consistency** (anniversary reconciliation, batch corpus, concurrency race, idempotent replay). Challenges 1-4 from the brief are each tagged in the showcase.
+
 ---
 
 ## Architecture at a glance

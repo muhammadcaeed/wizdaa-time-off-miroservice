@@ -5,5 +5,5 @@
     "moduleResolution": "node",
     "types": ["node"]
   },
-  "include": ["verify-traceability.ts"]
+  "include": ["**/*.ts"]
 }
