@@ -24,7 +24,7 @@ export interface AdjustBalanceInput {
 /**
  * Typed client for the HCM realtime adjust endpoint (TRD §9.1). Wraps native
  * `fetch` — the wrapper earns its place by enforcing the expected-total
- * arithmetic check (TRD §9.4 item 2) and mapping HCM outcomes to typed
+ * arithmetic check (TRD §9.2 item 2) and mapping HCM outcomes to typed
  * {@link HcmError}s the saga can branch on. Retry and circuit breaker (ADR-008)
  * are layered on in a later cycle; this cycle makes a single attempt.
  */

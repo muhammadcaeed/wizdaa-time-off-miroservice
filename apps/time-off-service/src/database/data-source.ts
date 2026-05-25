@@ -30,7 +30,7 @@ interface PragmaCapable {
 }
 
 /**
- * Builds runtime TypeORM options for SQLite in WAL mode (TRD §10.2, §16).
+ * Builds runtime TypeORM options for SQLite in WAL mode (TRD §10.2, §15).
  * `synchronize` is never enabled; schema changes go through committed
  * migrations only (requirements.md §2.3). Migrations are deliberately omitted
  * here — the running app does not load them; they are applied via the CLI

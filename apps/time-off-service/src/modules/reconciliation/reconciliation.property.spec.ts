@@ -260,7 +260,7 @@ describe('reconciliation idempotence and INV-02 under interleave (property-based
                 if (b && b.totalDays - (b.reservedDays + 1) >= 0) {
                   // Back the row bump with a SUBMITTED request so sumReservedDays
                   // tracks row.reservedDays (INV-03). This is load-bearing under
-                  // §9.7: the point path no longer overwrites reserved, so the
+                  // §9.3: the point path no longer overwrites reserved, so the
                   // applyDrift guard relies on sumReservedDays being truthful.
                   await harness.dataSource.getRepository(TimeOffRequest).insert({
                     id: `req_${randomUUID()}`,

@@ -7,7 +7,7 @@ export interface VerifiedAdjust {
 }
 
 /**
- * The expected-total arithmetic check (TRD §9.4 item 2, the commit gate). A 2xx
+ * The expected-total arithmetic check (TRD §9.2 item 2, the commit gate). A 2xx
  * adjust commits only if it carries a non-empty `hcm_correlation_id` and
  * `new_total_days === preTotal + delta`. Any deviation is F-04 (ambiguous) and
  * throws {@link HcmArithmeticMismatchError}; the saga then fails the request

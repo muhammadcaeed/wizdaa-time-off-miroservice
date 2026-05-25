@@ -6,7 +6,7 @@ export const POINT_RECONCILER = Symbol('POINT_RECONCILER');
 
 /**
  * A request to refresh one `(employee, location)` balance from the HCM realtime
- * read (TRD §9.7). `reason` is the audit discriminator for the call site
+ * read (TRD §9.3). `reason` is the audit discriminator for the call site
  * (F-04 ambiguous adjust, F-05 HCM 409, or post-commit drift; ADR-011).
  */
 export interface PointReconciliationJob {
@@ -28,7 +28,7 @@ export interface PointReconciliationJob {
  */
 export interface PointReconciler {
   /**
-   * Reconciles one balance against the HCM realtime read (TRD §9.7).
+   * Reconciles one balance against the HCM realtime read (TRD §9.3).
    * @param employeeId the employee whose balance to refresh
    * @param locationId the location of the balance to refresh
    * @param context optional correlation id + reason from the triggering flow,

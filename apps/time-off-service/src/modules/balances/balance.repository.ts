@@ -96,7 +96,7 @@ export class BalanceRepository {
 
   /**
    * Overwrites a balance with absolute HCM-sourced values during reconciliation
-   * (TRD §9.3, §9.7): `total_days` and `reserved_days` are set, not adjusted,
+   * (TRD §9.3, §9.3): `total_days` and `reserved_days` are set, not adjusted,
    * and `last_hcm_sync_at` is stamped. Version-CAS guards against a concurrent
    * saga write between the read and this overwrite (ADR-005).
    * @param id the balance row id
@@ -124,9 +124,9 @@ export class BalanceRepository {
 
   /**
    * Overwrites ONLY `total_days` with the absolute HCM value during point
-   * reconciliation (TRD §9.7), stamping `last_hcm_sync_at`. Unlike
+   * reconciliation (TRD §9.3), stamping `last_hcm_sync_at`. Unlike
    * {@link casReconcile} (the §9.3 batch path) it deliberately does NOT write
-   * `reserved_days`: §9.7 sets the total alone, leaving the locally-owned
+   * `reserved_days`: §9.3 sets the total alone, leaving the locally-owned
    * reservation count untouched. Version-CAS guards against a concurrent saga
    * write between the read and this overwrite (ADR-005).
    * @param id the balance row id

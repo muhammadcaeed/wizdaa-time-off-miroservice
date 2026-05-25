@@ -5,7 +5,7 @@ import { verifyAdjustResponse } from './hcm-response-check';
  * @req REQ-SYNC-03
  * @req REQ-SYNC-04
  */
-describe('verifyAdjustResponse (expected-total arithmetic check, TRD §9.4)', () => {
+describe('verifyAdjustResponse (expected-total arithmetic check, TRD §9.2)', () => {
   it('accepts a 2xx response whose new_total_days equals pre_total + delta with a correlation id', () => {
     const result = verifyAdjustResponse(
       { new_total_days: 15, hcm_correlation_id: 'hcm_op_1' },
