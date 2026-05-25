@@ -2,6 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import type { Server } from 'node:http';
 import { bearer } from '../../../test/support/auth';
 import { bootstrapE2E, type E2EContext } from '../../../test/support/e2e';
 import { MockHcmModule } from '../../mock-hcm/src/mock-hcm.module';
@@ -71,13 +72,13 @@ describe('HCM resilience (e2e): retry exhaustion, breaker trip, 503 fast-fail', 
         status: 'SUBMITTED',
         submittedAt: new Date(),
       });
-      await request(mock.getHttpServer())
+      await request(mock.getHttpServer() as Server)
         .post('/mock/control/balances')
         .send({ employee_id: emp, location_id: 'loc_001', total_days: 10 });
     }
 
     // HCM is hard-down for every adjust.
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: 'down' } });
   });
@@ -96,7 +97,9 @@ describe('HCM resilience (e2e): retry exhaustion, breaker trip, 503 fast-fail', 
       .set('Idempotency-Key', randomUUID());
 
   async function adjustCallCount(): Promise<number> {
-    const res = await request(mock.getHttpServer()).get('/mock/control/calls').expect(200);
+    const res = await request(mock.getHttpServer() as Server)
+      .get('/mock/control/calls')
+      .expect(200);
     const body = res.body as { calls: { path: string }[] };
     return body.calls.filter((c) => c.path.includes('/hcm/balances/adjust')).length;
   }
@@ -143,7 +146,7 @@ describe('HCM resilience (e2e): retry exhaustion, breaker trip, 503 fast-fail', 
 
   it('recovers after cool-down: the HALF_OPEN probe succeeds and closes the breaker (REQ-SYNC-06)', async () => {
     // HCM is healthy again.
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: 'normal' } });
     await sleep(COOLDOWN_MS + 250); // cool-down elapses → next call drives the probe

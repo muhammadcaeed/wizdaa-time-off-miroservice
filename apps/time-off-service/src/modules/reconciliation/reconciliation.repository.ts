@@ -87,7 +87,10 @@ export class ReconciliationRepository {
       // any other failure is a real fault and must propagate untranslated.
       // Prefer the structured driver code (locale/message-stable); fall back to
       // the message fragment for driver builds that don't surface a code.
-      if (err instanceof QueryFailedError && this.isUniqueViolation(err)) {
+      if (
+        err instanceof QueryFailedError &&
+        this.isUniqueViolation(err as QueryFailedError<Error>)
+      ) {
         throw new ReconciliationInProgressError();
       }
       throw err;

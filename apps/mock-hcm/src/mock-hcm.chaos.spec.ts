@@ -1,6 +1,7 @@
 import { type INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request, { type Response } from 'supertest';
+import type { Server } from 'node:http';
 import { MockHcmModule } from './mock-hcm.module';
 
 interface AdjustBody {
@@ -60,11 +61,13 @@ describe('Mock HCM (chaos scenarios)', () => {
   });
 
   beforeEach(async () => {
-    await request(app.getHttpServer()).post('/mock/control/reset').expect(201);
+    await request(app.getHttpServer() as Server)
+      .post('/mock/control/reset')
+      .expect(201);
   });
 
   async function setScenario(scenario: string): Promise<void> {
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: scenario } })
       .expect(201);
@@ -74,7 +77,7 @@ describe('Mock HCM (chaos scenarios)', () => {
     it('delays the response by the per-request latency_ms override', async () => {
       await setScenario('slow');
       const start = Date.now();
-      const res = await request(app.getHttpServer())
+      const res = await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust?latency_ms=150')
         .set('Idempotency-Key', 'k-slow')
         .send(adjustBody)
@@ -90,7 +93,7 @@ describe('Mock HCM (chaos scenarios)', () => {
     it('returns 503 on every call', async () => {
       await setScenario('down');
       for (const key of ['d1', 'd2', 'd3']) {
-        await request(app.getHttpServer())
+        await request(app.getHttpServer() as Server)
           .post('/hcm/balances/adjust')
           .set('Idempotency-Key', key)
           .send(adjustBody)
@@ -106,7 +109,7 @@ describe('Mock HCM (chaos scenarios)', () => {
 
       const statuses: number[] = [];
       for (let i = 0; i < 4; i += 1) {
-        const res = await request(app.getHttpServer())
+        const res = await request(app.getHttpServer() as Server)
           .post('/hcm/balances/adjust?fail_rate=0.5')
           .set('Idempotency-Key', `f-${i}`)
           .send(adjustBody);
@@ -119,8 +122,10 @@ describe('Mock HCM (chaos scenarios)', () => {
       expect(successes).toBe(2);
 
       // A retry with the same key succeeds once the scenario is normal again.
-      await request(app.getHttpServer()).post('/mock/control/reset').expect(201);
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
+        .post('/mock/control/reset')
+        .expect(201);
+      await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'f-recovered')
         .send(adjustBody)
@@ -132,14 +137,14 @@ describe('Mock HCM (chaos scenarios)', () => {
       // succeed once the scenario flips. A later global assignment wins in
       // ScenarioService.resolve (specificity >= best), so no reset is needed.
       await setScenario('down');
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'no-poison')
         .send(adjustBody)
         .expect(503);
 
       await setScenario('normal');
-      const res = await request(app.getHttpServer())
+      const res = await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'no-poison')
         .send(adjustBody)
@@ -161,7 +166,9 @@ describe('Mock HCM (chaos scenarios)', () => {
       ).rejects.toThrow();
 
       // The failed attempt is still logged with transport_error + the key it sent.
-      const res = await request(app.getHttpServer()).get('/mock/control/calls').expect(200);
+      const res = await request(app.getHttpServer() as Server)
+        .get('/mock/control/calls')
+        .expect(200);
       const adjust = body<CallsBody>(res).calls.find((c) =>
         c.path.startsWith('/hcm/balances/adjust'),
       );
@@ -173,13 +180,15 @@ describe('Mock HCM (chaos scenarios)', () => {
 
   describe('GET /mock/control/calls', () => {
     it('records method, path, idempotency-key, and status for HCM-surface calls', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'log-1')
         .send(adjustBody)
         .expect(200);
 
-      const res = await request(app.getHttpServer()).get('/mock/control/calls').expect(200);
+      const res = await request(app.getHttpServer() as Server)
+        .get('/mock/control/calls')
+        .expect(200);
       const calls = body<CallsBody>(res).calls;
       const adjust = calls.find((c) => c.path.startsWith('/hcm/balances/adjust'));
       expect(adjust).toBeDefined();
@@ -190,25 +199,29 @@ describe('Mock HCM (chaos scenarios)', () => {
     });
 
     it('does not record control-plane calls', async () => {
-      const res = await request(app.getHttpServer()).get('/mock/control/calls').expect(200);
+      const res = await request(app.getHttpServer() as Server)
+        .get('/mock/control/calls')
+        .expect(200);
       const calls = body<CallsBody>(res).calls;
       expect(calls.every((c) => !c.path.startsWith('/mock/control'))).toBe(true);
     });
 
     it('records the same idempotency-key across repeated attempts under down', async () => {
       await setScenario('down');
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'retry-key')
         .send(adjustBody)
         .expect(503);
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'retry-key')
         .send(adjustBody)
         .expect(503);
 
-      const res = await request(app.getHttpServer()).get('/mock/control/calls').expect(200);
+      const res = await request(app.getHttpServer() as Server)
+        .get('/mock/control/calls')
+        .expect(200);
       const adjusts = body<CallsBody>(res).calls.filter((c) =>
         c.path.startsWith('/hcm/balances/adjust'),
       );
@@ -218,14 +231,18 @@ describe('Mock HCM (chaos scenarios)', () => {
     });
 
     it('is cleared by reset', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'log-clear')
         .send(adjustBody)
         .expect(200);
-      await request(app.getHttpServer()).post('/mock/control/reset').expect(201);
+      await request(app.getHttpServer() as Server)
+        .post('/mock/control/reset')
+        .expect(201);
 
-      const res = await request(app.getHttpServer()).get('/mock/control/calls').expect(200);
+      const res = await request(app.getHttpServer() as Server)
+        .get('/mock/control/calls')
+        .expect(200);
       expect(body<CallsBody>(res).calls).toEqual([]);
     });
   });

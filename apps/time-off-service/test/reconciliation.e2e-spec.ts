@@ -2,6 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import type { Server } from 'node:http';
 import { bearer } from '../../../test/support/auth';
 import { bootstrapE2E, type E2EContext } from '../../../test/support/e2e';
 import { MockHcmModule } from '../../mock-hcm/src/mock-hcm.module';
@@ -61,7 +62,7 @@ describe('Reconciliation surface, post-commit drift, and F-05 enqueue (e2e)', ()
       reservedDays: reserved,
       version: 0,
     });
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/balances')
       .send({ employee_id: id, location_id: LOC, total_days: total });
   }
@@ -87,7 +88,9 @@ describe('Reconciliation surface, post-commit drift, and F-05 enqueue (e2e)', ()
 
   /** Count of adjust calls the client has made, from the mock's call log. */
   async function adjustCallCount(): Promise<number> {
-    const res = await request(mock.getHttpServer()).get('/mock/control/calls').expect(200);
+    const res = await request(mock.getHttpServer() as Server)
+      .get('/mock/control/calls')
+      .expect(200);
     const body = res.body as { calls: { path: string }[] };
     return body.calls.filter((c) => c.path.includes('/hcm/balances/adjust')).length;
   }
@@ -135,7 +138,7 @@ describe('Reconciliation surface, post-commit drift, and F-05 enqueue (e2e)', ()
 
     // Silently drift the HCM total away from the committed local total (7 -> 99),
     // modeling an independent HCM-side edit after the commit.
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/drift')
       .send({ employee_id: 'emp_drift', location_id: LOC, total_days: 99 })
       .expect(201);
@@ -169,7 +172,7 @@ describe('Reconciliation surface, post-commit drift, and F-05 enqueue (e2e)', ()
       .getRepository(Balance)
       .update({ id: 'bal_emp_f05' }, { totalDays: 5, reservedDays: 0 });
     // HCM holds only 2: a 3-day decrement drives it to -1, triggering the 409.
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/balances')
       .send({ employee_id: 'emp_f05', location_id: LOC, total_days: 2 });
     await seedRequest('req_f05', 'emp_f05', 3);

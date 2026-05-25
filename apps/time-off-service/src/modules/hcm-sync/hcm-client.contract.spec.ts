@@ -1,6 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import type { Server } from 'node:http';
 import { MockHcmModule } from '../../../../mock-hcm/src/mock-hcm.module';
 import { HcmClient } from './hcm-client';
 import {
@@ -37,8 +38,10 @@ describe('HcmClient (contract against mock HCM)', () => {
   });
 
   beforeEach(async () => {
-    await request(mock.getHttpServer()).post('/mock/control/reset').expect(201);
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
+      .post('/mock/control/reset')
+      .expect(201);
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/balances')
       .send({ employee_id: EMP, location_id: LOC, total_days: 20 });
   });
@@ -56,13 +59,15 @@ describe('HcmClient (contract against mock HCM)', () => {
     expect(result.newTotalDays).toBe(15);
     expect(result.correlationId).toBeTruthy();
 
-    const state = await request(mock.getHttpServer()).get('/mock/control/state').expect(200);
+    const state = await request(mock.getHttpServer() as Server)
+      .get('/mock/control/state')
+      .expect(200);
     const body = state.body as { idempotencyKeys: string[] };
     expect(body.idempotencyKeys).toContain('req_c1:decrement');
   });
 
   it('throws HcmArithmeticMismatchError under the unverifiable-success scenario (F-04)', async () => {
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: 'unverifiable-success' } });
 
@@ -85,7 +90,7 @@ describe('HcmClient (contract against mock HCM)', () => {
    * @req REQ-DEF-07
    */
   it('maps an HCM 5xx to HcmServerError (F-03)', async () => {
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: 'down' } });
 
@@ -93,7 +98,7 @@ describe('HcmClient (contract against mock HCM)', () => {
   });
 
   it('maps a transport-level connection failure to HcmTransportError (F-01)', async () => {
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: 'network-failure' } });
 
@@ -101,7 +106,7 @@ describe('HcmClient (contract against mock HCM)', () => {
   });
 
   it('maps a client-timeout against a slow HCM to HcmTimeoutError (F-02)', async () => {
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: 'slow' } }); // default 2000ms latency
     const impatient = new HcmClient(await mock.getUrl(), 50);

@@ -1,6 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import type { Server } from 'node:http';
 import { MockHcmModule } from '../../../../mock-hcm/src/mock-hcm.module';
 import { HcmReaderClient } from './hcm-reader-client';
 import { HcmServerError } from './hcm.errors';
@@ -35,7 +36,9 @@ describe('HcmReaderClient (contract against mock HCM)', () => {
   });
 
   beforeEach(async () => {
-    await request(mock.getHttpServer()).post('/mock/control/reset').expect(201);
+    await request(mock.getHttpServer() as Server)
+      .post('/mock/control/reset')
+      .expect(201);
   });
 
   it('getBalances maps the employee rows to the camelCase shape', async () => {
@@ -93,7 +96,7 @@ describe('HcmReaderClient (contract against mock HCM)', () => {
     // A sweep that has already advanced past TS_A (since strictly after it) must
     // NOT re-discover the change — that omission is what the drift check covers.
     const driftedTotal = 999;
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/drift')
       .send({ employee_id: EMP, location_id: LOC_A, total_days: driftedTotal })
       .expect(201);
@@ -113,7 +116,7 @@ describe('HcmReaderClient (contract against mock HCM)', () => {
   });
 
   it('getBatch maps an HCM 5xx (down scenario) to HcmServerError', async () => {
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { batch: 'down' } });
 
@@ -122,7 +125,7 @@ describe('HcmReaderClient (contract against mock HCM)', () => {
 
   it('getBalances maps an HCM 5xx (down scenario) to HcmServerError', async () => {
     await inject(EMP, LOC_A, 20, TS_A);
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { get_balance: 'down' } });
 
@@ -136,11 +139,13 @@ describe('HcmReaderClient (contract against mock HCM)', () => {
     totalDays: number,
     lastModifiedAt: string,
   ): Promise<unknown> {
-    return request(mock.getHttpServer()).post('/mock/control/balances').send({
-      employee_id: employeeId,
-      location_id: locationId,
-      total_days: totalDays,
-      last_modified_at: lastModifiedAt,
-    });
+    return request(mock.getHttpServer() as Server)
+      .post('/mock/control/balances')
+      .send({
+        employee_id: employeeId,
+        location_id: locationId,
+        total_days: totalDays,
+        last_modified_at: lastModifiedAt,
+      });
   }
 });

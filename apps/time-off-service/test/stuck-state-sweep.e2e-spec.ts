@@ -1,6 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import type { Server } from 'node:http';
 import { bootstrapE2E, type E2EContext } from '../../../test/support/e2e';
 import { MockHcmModule } from '../../mock-hcm/src/mock-hcm.module';
 import { AuditLog, Balance, Employee, Location, TimeOffRequest } from '../src/database/entities';
@@ -48,7 +49,7 @@ async function seedEmployee(
     reservedDays,
     version: 0,
   });
-  await request(mock.getHttpServer())
+  await request(mock.getHttpServer() as Server)
     .post('/mock/control/balances')
     .send({ employee_id: id, location_id: LOC, total_days: totalDays });
 }
@@ -136,7 +137,7 @@ describe('Stuck-state sweep: APPROVING → APPROVED (case 1, HCM confirms)', () 
     const reqId = 'req_sw1';
     const idempotencyKey = `${reqId}:decrement`;
     // Make HCM think it already applied the decrement (stores idempotency key).
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/hcm/balances/adjust')
       .set('Idempotency-Key', idempotencyKey)
       .send({
@@ -215,7 +216,7 @@ describe('Stuck-state sweep: APPROVING → APPROVAL_FAILED (HCM returns error)',
     // No prior HCM call: HCM does not have the idempotency key.
     // The mock HCM is set to `down` so the sweep gets a transport error,
     // which drives the APPROVING→APPROVAL_FAILED transition.
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: 'down' }, scope: { employee_id: 'emp_sw2' } });
 
@@ -286,8 +287,11 @@ describe('Stuck-state sweep: breaker OPEN → sweep skipped entirely (REQ-DEF-12
     for (let i = 0; i < 5; i++) breaker.recordFailure();
     expect(breaker.isHardOpen()).toBe(true);
 
-    const callsBefore = (await request(mock.getHttpServer()).get('/mock/control/calls').expect(200))
-      .body as { calls: { path: string }[] };
+    const callsBefore = (
+      await request(mock.getHttpServer() as Server)
+        .get('/mock/control/calls')
+        .expect(200)
+    ).body as { calls: { path: string }[] };
     const adjustsBefore = callsBefore.calls.filter((c) =>
       c.path.includes('/hcm/balances/adjust'),
     ).length;
@@ -301,8 +305,11 @@ describe('Stuck-state sweep: breaker OPEN → sweep skipped entirely (REQ-DEF-12
     expect(req.status).toBe('APPROVING');
 
     // No new HCM adjust calls made.
-    const callsAfter = (await request(mock.getHttpServer()).get('/mock/control/calls').expect(200))
-      .body as { calls: { path: string }[] };
+    const callsAfter = (
+      await request(mock.getHttpServer() as Server)
+        .get('/mock/control/calls')
+        .expect(200)
+    ).body as { calls: { path: string }[] };
     const adjustsAfter = callsAfter.calls.filter((c) =>
       c.path.includes('/hcm/balances/adjust'),
     ).length;
@@ -436,10 +443,10 @@ describe('Stuck-state sweep: APPROVING → APPROVED (case 2, recon already absor
     //
     // Correct approach: reset mock balance to 10, call decrement (mock stores key,
     // returns 7), then reset mock balance back to 7 (simulating recon on mock side).
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/balances')
       .send({ employee_id: 'emp_sw_c2a', location_id: LOC, total_days: 10 });
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/hcm/balances/adjust')
       .set('Idempotency-Key', idempotencyKey)
       .send({
@@ -527,10 +534,10 @@ describe('Stuck-state sweep: CANCELLING → CANCELLED (case 2, recon already abs
     // then leave mock at 10 — same as the local DB.
     const reqId = 'req_sw_c2c';
     const idempotencyKey = `${reqId}:increment`;
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/balances')
       .send({ employee_id: 'emp_sw_c2c', location_id: LOC, total_days: 7 });
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/hcm/balances/adjust')
       .set('Idempotency-Key', idempotencyKey)
       .send({
@@ -607,7 +614,7 @@ describe('Stuck-state sweep: CANCELLING → CANCELLED (case 1, HCM confirms)', (
     const idempotencyKey = `${reqId}:increment`;
 
     // Make HCM think it already applied the increment (total: 7→10).
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/hcm/balances/adjust')
       .set('Idempotency-Key', idempotencyKey)
       .send({
