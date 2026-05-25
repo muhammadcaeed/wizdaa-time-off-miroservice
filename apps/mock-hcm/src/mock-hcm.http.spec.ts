@@ -1,6 +1,7 @@
 import { type INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request, { type Response } from 'supertest';
+import type { Server } from 'node:http';
 import { MockHcmModule } from './mock-hcm.module';
 
 interface BalancesBody {
@@ -61,7 +62,9 @@ describe('Mock HCM (HTTP)', () => {
   });
 
   beforeEach(async () => {
-    await request(app.getHttpServer()).post('/mock/control/reset').expect(201);
+    await request(app.getHttpServer() as Server)
+      .post('/mock/control/reset')
+      .expect(201);
   });
 
   const adjustBody = {
@@ -74,7 +77,9 @@ describe('Mock HCM (HTTP)', () => {
 
   describe('GET /hcm/balances/:employee_id', () => {
     it('returns 200 with all balances for a known employee', async () => {
-      const res = await request(app.getHttpServer()).get('/hcm/balances/emp_001').expect(200);
+      const res = await request(app.getHttpServer() as Server)
+        .get('/hcm/balances/emp_001')
+        .expect(200);
 
       expect(body<BalancesBody>(res)).toEqual({
         employee_id: 'emp_001',
@@ -85,13 +90,15 @@ describe('Mock HCM (HTTP)', () => {
     });
 
     it('returns 404 for an unknown employee', async () => {
-      await request(app.getHttpServer()).get('/hcm/balances/nobody').expect(404);
+      await request(app.getHttpServer() as Server)
+        .get('/hcm/balances/nobody')
+        .expect(404);
     });
   });
 
   describe('POST /hcm/balances/adjust', () => {
     it('applies the delta and returns the new total under normal', async () => {
-      const res = await request(app.getHttpServer())
+      const res = await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'req_1:decrement')
         .send(adjustBody)
@@ -101,12 +108,14 @@ describe('Mock HCM (HTTP)', () => {
       expect(body<AdjustBody>(res).hcm_correlation_id).toBeTruthy();
       expect(body<AdjustBody>(res).employee_id).toBe('emp_001');
 
-      const after = await request(app.getHttpServer()).get('/hcm/balances/emp_001').expect(200);
+      const after = await request(app.getHttpServer() as Server)
+        .get('/hcm/balances/emp_001')
+        .expect(200);
       expect(body<BalancesBody>(after).balances[0].total_days).toBe(15);
     });
 
     it('returns 404 for an unknown (employee, location) pair', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'k')
         .send({ ...adjustBody, location_id: 'loc_999' })
@@ -114,7 +123,7 @@ describe('Mock HCM (HTTP)', () => {
     });
 
     it('rejects an extra field via the validation pipe', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'k')
         .send({ ...adjustBody, surprise: true })
@@ -122,13 +131,13 @@ describe('Mock HCM (HTTP)', () => {
     });
 
     it('replays the original response verbatim for a duplicate key + body', async () => {
-      const first = await request(app.getHttpServer())
+      const first = await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'req_1:decrement')
         .send(adjustBody)
         .expect(200);
 
-      const second = await request(app.getHttpServer())
+      const second = await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'req_1:decrement')
         .send(adjustBody)
@@ -136,18 +145,20 @@ describe('Mock HCM (HTTP)', () => {
 
       expect(body<AdjustBody>(second)).toEqual(body<AdjustBody>(first));
 
-      const after = await request(app.getHttpServer()).get('/hcm/balances/emp_001').expect(200);
+      const after = await request(app.getHttpServer() as Server)
+        .get('/hcm/balances/emp_001')
+        .expect(200);
       expect(body<BalancesBody>(after).balances[0].total_days).toBe(15);
     });
 
     it('returns 409 for a duplicate key with a different body', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'req_1:decrement')
         .send(adjustBody)
         .expect(200);
 
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'req_1:decrement')
         .send({ ...adjustBody, delta: -6 })
@@ -155,12 +166,12 @@ describe('Mock HCM (HTTP)', () => {
     });
 
     it('under ambiguous-success returns 200 with the unchanged pre-total and does not mutate storage', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/mock/control/scenarios')
         .send({ endpoints: { adjust: 'ambiguous-success' } })
         .expect(201);
 
-      const res = await request(app.getHttpServer())
+      const res = await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'k')
         .send(adjustBody)
@@ -168,17 +179,19 @@ describe('Mock HCM (HTTP)', () => {
 
       expect(body<AdjustBody>(res).new_total_days).toBe(20);
 
-      const after = await request(app.getHttpServer()).get('/hcm/balances/emp_001').expect(200);
+      const after = await request(app.getHttpServer() as Server)
+        .get('/hcm/balances/emp_001')
+        .expect(200);
       expect(body<BalancesBody>(after).balances[0].total_days).toBe(20);
     });
 
     it('under unverifiable-success returns a mismatching total and a stale GET', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/mock/control/scenarios')
         .send({ endpoints: { adjust: 'unverifiable-success' } })
         .expect(201);
 
-      const res = await request(app.getHttpServer())
+      const res = await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'k')
         .send(adjustBody)
@@ -186,24 +199,26 @@ describe('Mock HCM (HTTP)', () => {
 
       expect(body<AdjustBody>(res).new_total_days).toBe(16);
 
-      const after = await request(app.getHttpServer()).get('/hcm/balances/emp_001').expect(200);
+      const after = await request(app.getHttpServer() as Server)
+        .get('/hcm/balances/emp_001')
+        .expect(200);
       expect(body<BalancesBody>(after).balances[0].total_days).toBe(20);
     });
 
     it('honors a scoped scenario only for the matching pair', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/mock/control/scenarios')
         .send({ endpoints: { adjust: 'ambiguous-success' }, scope: { employee_id: 'emp_001' } })
         .expect(201);
 
-      const scoped = await request(app.getHttpServer())
+      const scoped = await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'k1')
         .send(adjustBody)
         .expect(200);
       expect(body<AdjustBody>(scoped).new_total_days).toBe(20);
 
-      const other = await request(app.getHttpServer())
+      const other = await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'k2')
         .send({ ...adjustBody, employee_id: 'emp_002', source_reference: 'request:req_2' })
@@ -214,11 +229,13 @@ describe('Mock HCM (HTTP)', () => {
 
   describe('GET /hcm/balances/batch', () => {
     it('returns 400 when since is missing', async () => {
-      await request(app.getHttpServer()).get('/hcm/balances/batch').expect(400);
+      await request(app.getHttpServer() as Server)
+        .get('/hcm/balances/batch')
+        .expect(400);
     });
 
     it('returns the paginated envelope for rows at or after since', async () => {
-      const res = await request(app.getHttpServer())
+      const res = await request(app.getHttpServer() as Server)
         .get('/hcm/balances/batch')
         .query({ since: '2026-01-01T00:00:00Z' })
         .expect(200);
@@ -229,7 +246,7 @@ describe('Mock HCM (HTTP)', () => {
     });
 
     it('filters out rows modified before since', async () => {
-      const res = await request(app.getHttpServer())
+      const res = await request(app.getHttpServer() as Server)
         .get('/hcm/balances/batch')
         .query({ since: '2026-06-01T00:00:00Z' })
         .expect(200);
@@ -238,7 +255,7 @@ describe('Mock HCM (HTTP)', () => {
     });
 
     it('paginates with an opaque cursor across the timestamp tie', async () => {
-      const first = await request(app.getHttpServer())
+      const first = await request(app.getHttpServer() as Server)
         .get('/hcm/balances/batch')
         .query({ since: '2026-01-01T00:00:00Z', limit: 1 })
         .expect(200);
@@ -247,7 +264,7 @@ describe('Mock HCM (HTTP)', () => {
       expect(firstBody.pagination.has_more).toBe(true);
       expect(firstBody.pagination.next_cursor).toBeTruthy();
 
-      const second = await request(app.getHttpServer())
+      const second = await request(app.getHttpServer() as Server)
         .get('/hcm/balances/batch')
         .query({
           since: '2026-01-01T00:00:00Z',
@@ -262,19 +279,19 @@ describe('Mock HCM (HTTP)', () => {
     });
 
     it('returns 400 for a malformed cursor', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .get('/hcm/balances/batch')
         .query({ since: '2026-01-01T00:00:00Z', cursor: 'not-a-valid-cursor!!' })
         .expect(400);
     });
 
     it('503s under the down scenario targeting batch', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/mock/control/scenarios')
         .send({ endpoints: { batch: 'down' } })
         .expect(201);
 
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .get('/hcm/balances/batch')
         .query({ since: '2026-01-01T00:00:00Z' })
         .expect(503);
@@ -284,16 +301,20 @@ describe('Mock HCM (HTTP)', () => {
   describe('POST /mock/control/drift', () => {
     it('changes total_days without advancing last_modified_at', async () => {
       const before = body<StateBody>(
-        await request(app.getHttpServer()).get('/mock/control/state').expect(200),
+        await request(app.getHttpServer() as Server)
+          .get('/mock/control/state')
+          .expect(200),
       ).storage.find((r) => r.employee_id === 'emp_001');
 
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/mock/control/drift')
         .send({ employee_id: 'emp_001', location_id: 'loc_001', total_days: 3 })
         .expect(201);
 
       const after = body<StateBody>(
-        await request(app.getHttpServer()).get('/mock/control/state').expect(200),
+        await request(app.getHttpServer() as Server)
+          .get('/mock/control/state')
+          .expect(200),
       ).storage.find((r) => r.employee_id === 'emp_001');
 
       expect(after?.total_days).toBe(3);
@@ -301,14 +322,14 @@ describe('Mock HCM (HTTP)', () => {
     });
 
     it('drift is invisible to the batch since filter', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/mock/control/drift')
         .send({ employee_id: 'emp_001', location_id: 'loc_001', total_days: 3 })
         .expect(201);
 
       // since strictly after the (unchanged) last_modified_at: the drifted row
       // must not appear, which is the whole point of drift (mock-hcm.md §3.3).
-      const res = await request(app.getHttpServer())
+      const res = await request(app.getHttpServer() as Server)
         .get('/hcm/balances/batch')
         .query({ since: '2026-02-01T00:00:00Z' })
         .expect(200);
@@ -317,7 +338,7 @@ describe('Mock HCM (HTTP)', () => {
     });
 
     it('returns 404 for an unknown pair', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/mock/control/drift')
         .send({ employee_id: 'nobody', location_id: 'loc_001', total_days: 1 })
         .expect(404);
@@ -326,26 +347,32 @@ describe('Mock HCM (HTTP)', () => {
 
   describe('control plane', () => {
     it('injects a balance via POST /mock/control/balances', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/mock/control/balances')
         .send({ employee_id: 'emp_777', location_id: 'loc_777', total_days: 42 })
         .expect(201);
 
-      const res = await request(app.getHttpServer()).get('/hcm/balances/emp_777').expect(200);
+      const res = await request(app.getHttpServer() as Server)
+        .get('/hcm/balances/emp_777')
+        .expect(200);
       expect(body<BalancesBody>(res).balances[0].total_days).toBe(42);
     });
 
     it('reset re-seeds storage and clears the idempotency cache', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/hcm/balances/adjust')
         .set('Idempotency-Key', 'k')
         .send(adjustBody)
         .expect(200);
 
-      await request(app.getHttpServer()).post('/mock/control/reset').expect(201);
+      await request(app.getHttpServer() as Server)
+        .post('/mock/control/reset')
+        .expect(201);
 
       const state = body<StateBody>(
-        await request(app.getHttpServer()).get('/mock/control/state').expect(200),
+        await request(app.getHttpServer() as Server)
+          .get('/mock/control/state')
+          .expect(200),
       );
       expect(state.idempotencyKeys).toEqual([]);
       const seeded = state.storage.find((r) => r.employee_id === 'emp_001');
@@ -353,13 +380,15 @@ describe('Mock HCM (HTTP)', () => {
     });
 
     it('exposes scenarios, storage, and idempotency keys via GET /mock/control/state', async () => {
-      await request(app.getHttpServer())
+      await request(app.getHttpServer() as Server)
         .post('/mock/control/scenarios')
         .send({ endpoints: { adjust: 'ambiguous-success' } })
         .expect(201);
 
       const state = body<StateBody>(
-        await request(app.getHttpServer()).get('/mock/control/state').expect(200),
+        await request(app.getHttpServer() as Server)
+          .get('/mock/control/state')
+          .expect(200),
       );
       expect(state.scenarios).toHaveLength(1);
       expect(Array.isArray(state.storage)).toBe(true);

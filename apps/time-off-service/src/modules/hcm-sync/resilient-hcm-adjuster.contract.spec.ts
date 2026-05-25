@@ -2,6 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { PinoLogger } from 'nestjs-pino';
 import request from 'supertest';
+import type { Server } from 'node:http';
 import { MockHcmModule } from '../../../../mock-hcm/src/mock-hcm.module';
 import { CircuitBreaker, type CircuitBreakerConfig } from './circuit-breaker';
 import { HcmClient, type AdjustBalanceInput } from './hcm-client';
@@ -58,8 +59,10 @@ describe('ResilientHcmAdjuster (contract against mock HCM)', () => {
   });
 
   beforeEach(async () => {
-    await request(mock.getHttpServer()).post('/mock/control/reset').expect(201);
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
+      .post('/mock/control/reset')
+      .expect(201);
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/balances')
       .send({ employee_id: EMP, location_id: LOC, total_days: 20 });
     breaker = new CircuitBreaker(BREAKER_CONFIG, Date.now, fakeLogger());
@@ -87,13 +90,15 @@ describe('ResilientHcmAdjuster (contract against mock HCM)', () => {
   }
 
   async function adjustCalls(): Promise<CallEntry[]> {
-    const res = await request(mock.getHttpServer()).get('/mock/control/calls').expect(200);
+    const res = await request(mock.getHttpServer() as Server)
+      .get('/mock/control/calls')
+      .expect(200);
     const body = res.body as { calls: CallEntry[] };
     return body.calls.filter((c) => c.path.includes('/hcm/balances/adjust'));
   }
 
   it('retries a 5xx (F-03) up to the budget reusing the original key, then surfaces HcmServerError', async () => {
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: 'down' } });
 
@@ -105,7 +110,7 @@ describe('ResilientHcmAdjuster (contract against mock HCM)', () => {
   });
 
   it('retries a transport failure (F-01) then surfaces HcmTransportError on exhaustion', async () => {
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: 'network-failure' } });
 
@@ -114,7 +119,7 @@ describe('ResilientHcmAdjuster (contract against mock HCM)', () => {
   });
 
   it('fast-fails with HcmBreakerOpenError once OPEN, without contacting HCM (REQ-SYNC-06)', async () => {
-    await request(mock.getHttpServer())
+    await request(mock.getHttpServer() as Server)
       .post('/mock/control/scenarios')
       .send({ endpoints: { adjust: 'down' } });
 
